@@ -1,0 +1,40 @@
+Package: GitaRiki-OSAryans
+Type: Package
+Title: Tools for Downloading and Querying OSV Vulnerability Databases
+Version: 0.1.0
+Authors@R: 
+    person(
+      given = "Заргаров",
+      family = "Александр",
+      email = "zargarovsasha@yandex.ru",
+      role = c("aut", "cre")
+    ),
+    person(
+      given = "Соколова",
+      family = "Мария",
+      email = "kyashinura@yandex.ru",
+      role = c("aut", "cre")
+    ),
+    person(
+      given = "Миронов",
+      family = "Павел",
+      email = "mironovpavel@yandex.ru",
+      role = c("aut", "cre")
+    )
+Description: 
+    Provides utilities for analysing GitHub profiles
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 4.0.0)
+Imports:
+    jsonlite,
+    curl,
+    utils,
+    zip
+RoxygenNote: 7.2.3
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
