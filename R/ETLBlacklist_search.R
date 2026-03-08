@@ -45,8 +45,11 @@ search_vulnerabilities <- function(query, version = NULL) {
   idx_purl <- get("OSV_INDEX_PURL", envir = .GlobalEnv)
   clean_key <- function(x) tolower(trimws(x))
 
+
   q <- clean_key(query)
   positions <- integer(0)
+
+
 
   if (exists(q, envir = idx_name, inherits = FALSE)) {
     positions <- c(positions, get(q, envir = idx_name))

@@ -10,6 +10,7 @@ is_version_vulnerable <- function(entry, version = NULL) {
     }
   }
 
+  cat("hui3")
   # 2) Диапазоны introduced/fixed
   if ("affected" %in% names(entry)) {
 

@@ -6,10 +6,17 @@
 #' version ranges. These indices are designed for `search_vulnerabilities()`.
 #'
 #' @param osv_data A list of OSV records returned by `download_osv()`.
+
+library(archive)
+
 load_osv <- function(zip_path) {
   tmp <- tempdir()
-  utils::unzip(zip_path, exdir = tmp)
+  message("Start to unzipping OSV")
 
+  fast_unzip_safe(zip_path)
+
+
+  message("Start to ETL OSV")
   files <- list.files(tmp, pattern = "\\.json$", full.names = TRUE)
 
   data <- vector("list", length(files))
@@ -51,4 +58,13 @@ load_osv <- function(zip_path) {
   assign("OSV_INDEX_PURL", idx_purl, envir = .GlobalEnv)
 
   invisible(TRUE)
+}
+
+
+fast_unzip_safe <- function(zip_path, out_dir = tempdir()) {
+
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+  options(archive.extract.filter = function(path) gsub(":", "_", path))
+  archive_extract(zip_path, dir = out_dir)
 }

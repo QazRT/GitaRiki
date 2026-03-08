@@ -17,6 +17,7 @@
 #'
 download_osv <- function(url = "https://www.googleapis.com/download/storage/v1/b/osv-vulnerabilities/o/all.zip?alt=media",
                          destfile = tempfile(fileext = ".zip")) {
+    message("Downloading OSV to: ", destfile)
     curl::curl_download(url, destfile)
     message("Downloaded to: ", destfile)
     return(destfile)

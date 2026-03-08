@@ -15,27 +15,43 @@
 
 
 # Подключаем пакет
-source(ETLBlacklist_download)
-source(ETLBlacklist_load)
-source(ETLBlacklist_search)
-source(ETLBlacklist_utils)
-source(ETLBlacklist_version_check)
-# source(ETLRepos_connect) # заготовка для подключения сбора списка репозиториев пользователя
+source("ETLBlacklist_download.R")
+source("ETLBlacklist_load.R")
+source("ETLBlacklist_search.R")
+source("ETLBlacklist_utils.R")
+source("ETLBlacklist_version_check.R")
+source("ETLBlacklist_sboms.R")
+source("ETL-Repos.R")
 
-check4blacklist <- function(pkg, version = NULL, verbose = FALSE) {
+check4blacklist <- function(username, deepReseach = FALSE,
+                            version = NULL, verbose = FALSE) {
   # Загружаем базу OSV (если не загружена)
   if (!exists("OSV_DATA", envir = .GlobalEnv)) {
     zip <- download_osv()
     load_osv(zip)
   }
 
+  pkgs <- get_github_repos(username)
+
+  packages <- data.frame()
+  if (deepReseach) {
+    packages <- sapply(pkgs$clone_url, generate_sbom_from_github)
+    pkgs <- dplyr::bind_rows(packages)
+    print(pkgs)
+  }
+
+  sapply(pkgs$name, pkg_summary)
+}
+
+pkg_summary <- function(pkg) {
+  cat("=-=-=-=-=-=-=-= Package ", pkg, " =-=-=-=-=-=-=-=\n")
   # Поиск уязвимостей
   res <- search_vulnerabilities(pkg, version)
 
-  if (length(res) == 0) {
-    cat("No vulnerabilities found for package:", pkg, "\n")
-    quit(status = 0)
-  }
+  # if (length(res) == 0) {
+  #   cat("No vulnerabilities found for package:", pkg, "\n")
+  #   quit(status = 0)
+  # }
 
 
   return(res)
@@ -51,7 +67,7 @@ check4blacklist <- function(pkg, version = NULL, verbose = FALSE) {
     cat("Versions:", paste(all_versions, collapse = ", "), "\n\n")
   }
 
-  if (verbose) {
-    cat("Total vulnerabilities found:", length(res), "\n")
-  }
+  cat("Total vulnerabilities found:", length(res), "\n")
+  # if (verbose) {
+  # }
 }
