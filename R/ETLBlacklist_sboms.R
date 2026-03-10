@@ -1,4 +1,4 @@
-generate_sbom_from_github <- function(repo_url) {
+generate_sbom_from_github <- function(repo_url, github_token = NULL) {
   library(httr)
   library(jsonlite)
   library(archive)
@@ -16,7 +16,12 @@ generate_sbom_from_github <- function(repo_url) {
 
   message("Detecting default branch...")
 
-  res <- GET(repo_api)
+  if (!is.null(github_token)) {
+    message("Find token")
+    res <- GET(repo_api, add_headers(Authorization = paste("token", github_token)))
+  } else {
+    res <- GET(repo_api)
+  }
 
   if (status_code(res) != 200) {
     stop("Cannot access GitHub API")
@@ -44,10 +49,11 @@ generate_sbom_from_github <- function(repo_url) {
 
   message("Downloading repository...")
 
-  download.file(zip_url, zip_file, mode = "wb")
+  download.file(zip_url, zip_file, mode = "wb", quiet = TRUE)
 
   fast_unzip_safe(zip_file, out_dir = repo_dir)
-
+  repo_dir <- file.path(repo_dir, repo)
+  repo_dir <- paste0(repo_dir, "-", default_branch)
 
   message("Generating SBOM...")
 
@@ -58,7 +64,8 @@ generate_sbom_from_github <- function(repo_url) {
         repo_dir,
         "-o",
         paste0("cyclonedx-json=", sbom_file)
-      )
+      ),
+      wait = TRUE
     )
     if (!file.exists(sbom_file)) {
       stop("SBOM generation failed")
@@ -82,8 +89,9 @@ generate_sbom_from_github <- function(repo_url) {
 
 
 fast_unzip_safe <- function(zip_path, out_dir = tempdir()) {
-
-  if (!is_zip(zip_path)) return(NULL)
+  if (!is_zip(zip_path)) {
+    return(NULL)
+  }
   dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
   options(archive.extract.filter = function(path) gsub(":", "_", path))
@@ -92,5 +100,5 @@ fast_unzip_safe <- function(zip_path, out_dir = tempdir()) {
 
 is_zip <- function(path) {
   sig <- readBin(path, "raw", 4)
-  identical(sig, as.raw(c(0x50,0x4B,0x03,0x04)))
+  identical(sig, as.raw(c(0x50, 0x4B, 0x03, 0x04)))
 }
