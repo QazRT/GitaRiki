@@ -48,7 +48,6 @@ get_github_repos <- function(input, token = NULL) {
       full_name        = repo$full_name %||% NA,
       description      = repo$description %||% NA,
       html_url         = repo$html_url %||% NA,
-      clone_url        = repo$clone_url %||% NA,
       ssh_url          = repo$ssh_url %||% NA,
       language         = repo$language %||% NA,
       stargazers_count = repo$stargazers_count %||% 0,
