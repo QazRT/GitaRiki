@@ -48,3 +48,6 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 syft.exe
+**/osv_db/**
+**/Test/**
+**/.quarto/**
