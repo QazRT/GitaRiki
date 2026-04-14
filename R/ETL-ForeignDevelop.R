@@ -1,13 +1,24 @@
+# ETL-ForeignDevelop.R
+# Функция для получения расширенной информации о пользователе GitHub
+# (репозитории, подписки, звёзды, активность по коммитам)
+# с сохранением в ClickHouse.
+
 get_github_user_info <- function(profile,
                                  token = NULL,
                                  include_commit_stats = FALSE,
-                                 max_commits = 1000) {
+                                 max_commits = 1000,
+                                 conn = NULL) {
   
-  # Проверка и установка пакетов
+  # Проверка подключения к ClickHouse
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
+  }
+  
+  # Проверка наличия пакетов (без автоматической установки)
   required_packages <- c("gh", "dplyr", "purrr", "httr")
   for (pkg in required_packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      install.packages(pkg)
+      stop("Пакет '", pkg, "' не установлен. Установите вручную: install.packages('", pkg, "')")
     }
   }
   library(gh)
@@ -32,7 +43,6 @@ get_github_user_info <- function(profile,
     return(NULL)
   }
   
-  # Функция для безопасного извлечения данных из списка репозиториев
   repo_to_df <- function(repo_list) {
     if (length(repo_list) == 0) return(data.frame())
     bind_rows(lapply(repo_list, function(r) {
@@ -54,6 +64,34 @@ get_github_user_info <- function(profile,
   username <- extract_github_username(profile)
   if (is.null(username)) {
     stop("Не удалось извлечь имя пользователя из: ", profile)
+  }
+  escaped_username <- gsub("'", "''", username)
+  
+  # Функция для удаления старых записей из таблицы перед вставкой
+  delete_old_records <- function(tbl_name) {
+    if (!exists("table_exists_custom", mode = "function")) return(FALSE)
+    if (!table_exists_custom(conn, tbl_name)) return(FALSE)
+    sql <- paste0("ALTER TABLE ", tbl_name, " DELETE WHERE profile = '", escaped_username, "'")
+    tryCatch({
+      clickhouse_request(conn, sql, parse_json = FALSE)
+      TRUE
+    }, error = function(e) {
+      warning("Не удалось удалить старые записи из ", tbl_name, ": ", e$message)
+      FALSE
+    })
+  }
+  
+  # Функция для загрузки data.frame в ClickHouse с предварительным удалением
+  save_to_clickhouse <- function(df, tbl_name) {
+    if (nrow(df) == 0) {
+      message("Таблица ", tbl_name, ": нет данных для сохранения.")
+      return(invisible(NULL))
+    }
+    delete_old_records(tbl_name)
+    df <- df %>% mutate(profile = username, fetched_at = Sys.time())
+    load_df_to_clickhouse(df = df, table_name = tbl_name, conn = conn,
+                          overwrite = FALSE, append = TRUE)
+    message("Сохранено в ", tbl_name, ": ", nrow(df), " записей.")
   }
   
   # 1. Репозитории, принадлежащие пользователю
@@ -91,12 +129,13 @@ get_github_user_info <- function(profile,
   
   # 4. Поиск коммитов во всех публичных репозиториях
   message("Выполняю поиск коммитов автора ", username, " (макс. ", max_commits, ")...")
+  commits_df <- data.frame()
+  activity_summary <- data.frame()
+  
   if (is.null(token)) {
     warning("Поиск коммитов требует аутентификации. Без токена эта часть будет пропущена.")
-    commits_df <- data.frame()
   } else {
     tryCatch({
-      # Поиск коммитов
       search_result <- gh::gh("GET /search/commits",
                               q = paste0("author:", username),
                               .token = token,
@@ -105,7 +144,6 @@ get_github_user_info <- function(profile,
       items <- search_result$items
       
       if (length(items) > 0) {
-        # Базовый датафрейм коммитов
         commits_df <- map_df(items, function(cmt) {
           repo_full <- cmt$repository$full_name %||% NA
           data.frame(
@@ -118,7 +156,6 @@ get_github_user_info <- function(profile,
           )
         })
         
-        # Если нужна статистика изменений
         if (include_commit_stats && nrow(commits_df) > 0) {
           message("Запрашиваю статистику изменений для ", nrow(commits_df), " коммитов...")
           stats_list <- list()
@@ -155,16 +192,6 @@ get_github_user_info <- function(profile,
         
         # Агрегированная статистика по репозиториям
         if (nrow(commits_df) > 0) {
-          activity_summary <- commits_df %>%
-            group_by(repository) %>%
-            summarise(
-              total_commits = n(),
-              first_commit = min(date, na.rm = TRUE),
-              last_commit = max(date, na.rm = TRUE),
-              .groups = "drop"
-            ) %>%
-            arrange(desc(total_commits))
-          
           if (include_commit_stats && "additions" %in% names(commits_df)) {
             activity_summary <- commits_df %>%
               group_by(repository) %>%
@@ -178,30 +205,45 @@ get_github_user_info <- function(profile,
                 .groups = "drop"
               ) %>%
               arrange(desc(total_commits))
+          } else {
+            activity_summary <- commits_df %>%
+              group_by(repository) %>%
+              summarise(
+                total_commits = n(),
+                first_commit = min(date, na.rm = TRUE),
+                last_commit = max(date, na.rm = TRUE),
+                .groups = "drop"
+              ) %>%
+              arrange(desc(total_commits))
           }
-        } else {
-          activity_summary <- data.frame()
         }
-        
       } else {
         message("Коммитов не найдено.")
-        commits_df <- data.frame()
-        activity_summary <- data.frame()
       }
     }, error = function(e) {
       warning("Ошибка при поиске коммитов: ", e$message)
-      commits_df <- data.frame()
-      activity_summary <- data.frame()
     })
   }
   
-  # Формируем результат
+  # Сохранение всех полученных данных в ClickHouse
+  message("Сохраняю данные в ClickHouse...")
+  save_to_clickhouse(owned_repos, "github_owned_repos")
+  save_to_clickhouse(subscriptions, "github_subscriptions")
+  save_to_clickhouse(starred, "github_starred")
+  if (nrow(commits_df) > 0) {
+    save_to_clickhouse(commits_df, "github_raw_commits")
+  }
+  if (nrow(activity_summary) > 0) {
+    save_to_clickhouse(activity_summary, "github_commits_activity")
+  }
+  
+  # Формируем результат (тот же, что и раньше)
   result <- list(
-    owned_repos     = owned_repos,
-    subscriptions   = subscriptions,
-    starred         = starred,
-    commits_activity = if (exists("activity_summary")) activity_summary else data.frame(),
-    raw_commits     = if (exists("commits_df")) commits_df else data.frame()
+    owned_repos      = owned_repos,
+    subscriptions    = subscriptions,
+    starred          = starred,
+    commits_activity = activity_summary,
+    raw_commits      = commits_df
   )
   
   message("Сбор данных завершён.")

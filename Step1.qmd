@@ -1,0 +1,350 @@
+---
+title: "Анализ Git репозиториев"
+format: 
+  revealjs:
+    theme: default
+    transition: slide
+    background-transition: fade
+    slide-number: true
+    preview-links: auto
+    footer: "Анализ Git репозиториев"
+    date-format: "YYYY"
+    chalkboard: false
+date: "2026"
+---
+
+------------------------------------------------------------------------
+
+##  {background-color="#f5f5f5"}
+
+:::: {style="display: flex; flex-direction: column; justify-content: center; height: 100%;"}
+<h1 style="font-size: 3em; color: #2c3e50; margin-bottom: 20px;">
+
+Анализ Git репозиториев
+
+</h1>
+
+`<p style="font-size: 1.5em; color: #34495e; font-style: italic; margin-bottom: 50px;`{=html} margin-top: -50px; `">`{=html}
+
+Создание поведенческого профиля разработчика, анализ аномалий
+
+</p>
+
+::: {style="text-align: right; margin-top: 20px;"}
+<p style="font-size: 0.9em; margin: 5px 0; color: #2c3e50; margin-top: -50px;">
+
+Заргаров А.Д.
+
+</p>
+
+<p style="font-size: 0.9em; margin: 5px 0; color: #2c3e50;">
+
+Миронов П.Э.
+
+</p>
+
+<p style="font-size: 0.9em; margin: 5px 0; color: #2c3e50;">
+
+Соколова М.М.
+
+</p>
+:::
+::::
+
+------------------------------------------------------------------------
+
+## Актуальность проекта
+
+::: {style="display: flex; flex-direction: column;"}
+`<p style="font-size: 1.2em; color: #e74c3c; font-weight: bold;`{=html} margin-bottom: -50px;`">`{=html}
+
+Почему это важно сейчас?
+
+</p>
+
+<ul style="font-size: 0.9em;">
+
+<li><strong>Рост удаленной разработки:</strong> Сложность оценки реального вклада разработчика</li>
+
+<li><strong>Инсайдерские угрозы:</strong> Участившиеся случаи намеренного внедрения уязвимостей</li>
+
+<li><strong>Качество кода:</strong> Необходимость автоматизированного контроля кодовой базы</li>
+
+<li><strong>Оптимизация процессов:</strong> Выявление узких мест в разработке</li>
+
+<li><strong>Безопасность:</strong> Обнаружение аномальных паттернов коммитов (ночные коммиты, подозрительные изменения)</li>
+
+</ul>
+:::
+
+------------------------------------------------------------------------
+
+## Цели проекта
+
+::: {style="display: flex; flex-direction: column;"}
+`<p style="font-size: 1.2em; color: #27ae60; font-weight: bold;`{=html}margin-bottom: -50px;`">`{=html}
+
+Ради чего мы это делаем?
+
+</p>
+
+<ul style="font-size: 0.9em;">
+
+<li><strong>Поведенческий профиль:</strong> Создание цифрового портрета разработчика на основе его активности в Git</li>
+
+<li><strong>Автоматизация анализа:</strong> Разработка системы автоматической оценки паттернов работы</li>
+
+<li><strong>Выявление аномалий:</strong> Обнаружение отклонений от типичного поведения разработчика</li>
+
+<li><strong>Предиктивная аналитика:</strong> Прогнозирование потенциальных рисков и проблем</li>
+
+<li><strong>Визуализация:</strong> Наглядное представление метрик разработки</li>
+
+</ul>
+:::
+
+------------------------------------------------------------------------
+
+## Целевая аудитория
+
+:::::: {style="display: flex; flex-direction: column; gap: 20px;"}
+`<p style="font-size: 1.2em; color: #3498db; font-weight: bold;`{=html}margin-bottom: -50px;`">`{=html}
+
+Для кого мы делаем?
+
+</p>
+
+::::: {style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"}
+::: {style="background: #f8f9fa; padding: 15px; border-radius: 10px;"}
+<h4>👥 HR-специалисты</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>Оценка реального опыта кандидатов</li>
+
+<li>Верификация портфолио</li>
+
+<li>Анализ стиля работы</li>
+
+</ul>
+:::
+
+::: {style="background: #f8f9fa; padding: 15px; border-radius: 10px;"}
+<h4>🔐 Специалисты по безопасности</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>Выявление инсайдерских угроз</li>
+
+<li>Обнаружение подозрительной активности</li>
+
+<li>Контроль доступа к критическим участкам кода</li>
+
+</ul>
+:::
+:::::
+::::::
+
+------------------------------------------------------------------------
+
+## Целевая аудитория
+
+:::::: {style="display: flex; flex-direction: column; gap: 20px;"}
+`<p style="font-size: 1.2em; color: #3498db; font-weight: bold;`{=html}margin-bottom: -50px;`">`{=html}
+
+Для кого мы делаем?
+
+</p>
+
+::::: {style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"}
+::: {style="background: #f8f9fa; padding: 15px; border-radius: 10px;"}
+<h4>📊 Team Lead'ы</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>Мониторинг активности команды</li>
+
+<li>Распределение нагрузки</li>
+
+<li>Выявление выгорания</li>
+
+</ul>
+:::
+
+::: {style="background: #f8f9fa; padding: 15px; border-radius: 10px;"}
+<h4>🏢 Менеджмент</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>Оценка эффективности разработки</li>
+
+<li>Принятие кадровых решений</li>
+
+<li>Оптимизация процессов</li>
+
+</ul>
+:::
+:::::
+::::::
+
+------------------------------------------------------------------------
+
+## Архитектура решения
+
+:::: {style="display: flex; flex-direction: column; gap: 20px;"}
+`<p style="font-size: 1.2em; color: #9b59b6; font-weight: bold;`{=html}margin-bottom: -50px;`">`{=html}
+
+Веб-сервис для анализа Git репозиториев
+
+</p>
+
+::: {style="background: #f8f9fa; padding: 20px; border-radius: 10px;"}
+<p style="text-align: center; font-weight: bold;">
+
+🔧 Принцип работы:
+
+</p>
+
+<ol style="font-size: 0.9em;">
+
+<li>Пользователь заходит на сайт</li>
+
+<li>Вводит ссылку на Git репозиторий разработчика</li>
+
+<li>Система анализирует историю коммитов</li>
+
+<li>Формируется поведенческий профиль</li>
+
+<li>Выявляются аномалии</li>
+
+<li>Предоставляется детальный отчет</li>
+
+</ol>
+:::
+::::
+
+------------------------------------------------------------------------
+
+## Архитектура решения
+
+:::::: {style="display: flex; flex-direction: column; gap: 20px;"}
+::::: {style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px;"}
+::: {style="background: #e8f4fd; padding: 15px; border-radius: 10px;"}
+<h4>Frontend</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>Интуитивный интерфейс</li>
+
+<li>Визуализация данных</li>
+
+<li>Интерактивные отчеты</li>
+
+</ul>
+:::
+
+::: {style="background: #e8f8f0; padding: 15px; border-radius: 10px;"}
+<h4>Backend</h4>
+
+<ul style="font-size: 0.8em;">
+
+<li>API для анализа репозиториев</li>
+
+<li>Обработка Git данных</li>
+
+<li>ML модели для анализа</li>
+
+</ul>
+:::
+:::::
+::::::
+
+## Функциональные возможности
+
+::::: {style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"}
+::: {style="background: #f8f9fa; padding: 20px; border-radius: 10px;"}
+<h4>📊 Анализ активности</h4>
+
+<ul>
+
+<li>Частота коммитов</li>
+
+<li>Временные паттерны</li>
+
+<li>Объем изменений</li>
+
+<li>Дни недели и время</li>
+
+</ul>
+:::
+
+::: {style="background: #f8f9fa; padding: 20px; border-radius: 10px;"}
+<h4>🔍 Поведенческий профиль</h4>
+
+<ul>
+
+<li>Стиль разработки</li>
+
+<li>Предпочтения в коде</li>
+
+<li>Типичные паттерны</li>
+
+<li>Индивидуальные метрики</li>
+
+</ul>
+:::
+:::::
+
+## Функциональные возможности
+
+::::: {style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"}
+::: {style="background: #f8f9fa; padding: 20px; border-radius: 10px;"}
+<h4>⚠️ Аномалии</h4>
+
+<ul>
+
+<li>Резкие изменения активности</li>
+
+<li>Подозрительные коммиты</li>
+
+<li>Нехарактерное поведение</li>
+
+<li>Потенциальные угрозы</li>
+
+</ul>
+:::
+
+::: {style="background: #f8f9fa; padding: 20px; border-radius: 10px;"}
+<h4>📈 Отчеты</h4>
+
+<ul>
+
+<li>Детальная статистика</li>
+
+<li>Графики и диаграммы</li>
+
+<li>Сравнение с профилем</li>
+
+<li>Рекомендации</li>
+
+</ul>
+:::
+:::::
+
+------------------------------------------------------------------------
+
+##  {background-color="#f5f5f5"}
+
+::: {style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%;"}
+<h1 style="font-size: 3em; color: #2c3e50; text-align: center; margin-bottom: 20px;">
+
+Спасибо за внимание!
+
+</h1>
+
+<p style="font-size: 1.5em; color: #7f8c8d; text-align: center;">
+
+Будем рады ответить на ваши вопросы
+
+</p>
+:::
