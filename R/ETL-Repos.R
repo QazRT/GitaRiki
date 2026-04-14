@@ -1,26 +1,55 @@
+# ETL-Repos.R
 # Функция для получения списка репозиториев пользователя GitHub
-get_github_repos <- function(input, token = NULL) {
-  # Проверка и установка необходимых пакетов
-  if (!requireNamespace("gh", quietly = TRUE)) {
-    install.packages("gh")
+# с сохранением в ClickHouse (перезапись данных при каждом вызове).
+
+get_github_repos <- function(input, token = NULL, conn = NULL) {
+  
+  # Проверка подключения к ClickHouse
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
-  if (!requireNamespace("httr", quietly = TRUE)) {
-    install.packages("httr")
-  }
-  if (!requireNamespace("dplyr", quietly = TRUE)) {
-    install.packages("dplyr")
+  
+  # Проверка наличия пакетов (без автоматической установки)
+  required_packages <- c("gh", "httr", "dplyr")
+  for (pkg in required_packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop("Пакет '", pkg, "' не установлен. Установите вручную: install.packages('", pkg, "')")
+    }
   }
   library(gh)
   library(httr)
   library(dplyr)
   
-  # Извлечение имени пользователя из ссылки или прямое использование
+  # Вспомогательный оператор %||%
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+  
+  # Извлечение имени пользователя
   username <- extract_github_username(input)
   if (is.null(username)) {
-    stop("Не удалось извлечь имя пользователя из ссылки: ", input)
+    stop("Не удалось извлечь имя пользователя из: ", input)
   }
   
-  # Получение всех репозиториев (с автопагинацией через .limit = Inf)
+  # Имя таблицы ClickHouse
+  table_name <- "github_repos"
+  escaped_username <- gsub("'", "''", username)
+  
+  # Проверяем существование таблицы (функция из ClickHouseConnector.R)
+  table_exists <- exists("table_exists_custom", mode = "function") &&
+    table_exists_custom(conn, table_name)
+  
+  # Если таблица существует, удаляем старые записи для данного пользователя
+  if (table_exists) {
+    sql_delete <- paste0(
+      "ALTER TABLE ", table_name,
+      " DELETE WHERE profile = '", escaped_username, "'"
+    )
+    tryCatch(
+      clickhouse_request(conn, sql_delete, parse_json = FALSE),
+      error = function(e) warning("Не удалось удалить старые записи: ", e$message)
+    )
+  }
+  
+  # Запрос к GitHub API
   message("Запрашиваю репозитории пользователя ", username, "...")
   tryCatch({
     repos <- gh::gh(
@@ -28,20 +57,18 @@ get_github_repos <- function(input, token = NULL) {
       username = username,
       .limit = Inf,
       .token = token,
-      .progress = TRUE  # покажет прогресс, если много страниц
+      .progress = TRUE
     )
   }, error = function(e) {
     stop("Ошибка при запросе к GitHub API: ", e$message)
   })
   
-  # Если репозиториев нет, возвращаем пустую таблицу
   if (length(repos) == 0) {
     message("Репозитории не найдены.")
     return(data.frame())
   }
   
-  # Преобразование списка репозиториев в data frame
-  # Выбираем только нужные поля
+  # Преобразование в data.frame
   repos_df <- bind_rows(lapply(repos, function(repo) {
     data.frame(
       name             = repo$name %||% NA,
@@ -62,23 +89,35 @@ get_github_repos <- function(input, token = NULL) {
   }))
   
   message("Получено репозиториев: ", nrow(repos_df))
+  
+  # Добавляем служебные колонки
+  repos_df <- repos_df %>%
+    mutate(
+      profile = username,
+      fetched_at = Sys.time()
+    )
+  
+  # Загружаем в ClickHouse
+  message("Сохраняю ", nrow(repos_df), " записей в ClickHouse...")
+  load_df_to_clickhouse(
+    df = repos_df,
+    table_name = table_name,
+    conn = conn,
+    overwrite = FALSE,
+    append = TRUE
+  )
+  
   return(repos_df)
 }
 
-# Вспомогательная функция для извлечения имени пользователя из URL
+# Вспомогательная функция для извлечения имени пользователя из URL или строки
 extract_github_username <- function(input) {
-  # Если входная строка уже похожа на имя (без слешей и протокола)
   if (grepl("^[a-zA-Z0-9_-]+$", input)) {
     return(input)
   }
-  
-  # Парсим URL
   parsed <- httr::parse_url(input)
-  # Путь должен содержать что-то после домена
   if (!is.null(parsed$path)) {
-    # Убираем ведущие и замыкающие слеши и разбиваем по слешам
     parts <- strsplit(gsub("^/|/$", "", parsed$path), "/")[[1]]
-    # Первая часть пути — это имя пользователя
     if (length(parts) >= 1) {
       return(parts[1])
     }
@@ -86,14 +125,5 @@ extract_github_username <- function(input) {
   return(NULL)
 }
 
-# Оператор %||% для подстановки значений по умолчанию (из base R)
+# Оператор %||% для удобства
 `%||%` <- function(x, y) if (is.null(x)) y else x
-
-# Пример использования:
-# 1. Без токена (ограничение 60 запросов в час)
-# repos_df <- get_github_repos("https://github.com/torvalds")
-# head(repos_df)
-
-# 2. С токеном (рекомендуется). Токен можно передать напрямую или установить
-#    переменную окружения GITHUB_PAT (например, Sys.setenv(GITHUB_PAT = "ваш_токен"))
-# repos_df <- get_github_repos("https://github.com/torvalds", token = Sys.getenv("GITHUB_PAT"))

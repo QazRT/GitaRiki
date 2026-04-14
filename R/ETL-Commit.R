@@ -1,20 +1,33 @@
+# ETL-Commit.R
+# Функция для получения коммитов пользователя GitHub с сохранением в ClickHouse.
+# При каждом вызове данные перезаписываются (предотвращает дублирование).
+
 get_user_commits <- function(profile,
                              token = NULL,
                              repos = NULL,
                              max_repos = NULL,
-                             include_stats = FALSE) {
+                             include_stats = FALSE,
+                             conn = NULL) {
   
-  # Проверка и загрузка зависимостей
-  if (!requireNamespace("gh", quietly = TRUE)) install.packages("gh")
-  if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
-  if (!requireNamespace("purrr", quietly = TRUE)) install.packages("purrr")
-  if (!requireNamespace("httr", quietly = TRUE)) install.packages("httr")
+  # Проверка подключения к ClickHouse
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
+  }
+  
+  # Проверка пакетов (без автоматической установки)
+  required_packages <- c("gh", "dplyr", "purrr", "httr")
+  for (pkg in required_packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop("Пакет '", pkg, "' не установлен. Установите вручную: install.packages('", pkg, "')")
+    }
+  }
   library(gh)
   library(dplyr)
   library(purrr)
   library(httr)
   
-  # Проверка наличия файла с вспомогательными функциями
+  # Подгружаем вспомогательный файл ETL-Repos.R (если он не адаптирован под ClickHouse,
+  # то будет работать без кэширования, что допустимо)
   if (!file.exists("ETL-Repos.R")) {
     stop("Файл ETL-Repos.R не найден в текущей рабочей директории.")
   }
@@ -26,8 +39,29 @@ get_user_commits <- function(profile,
     stop("Не удалось извлечь имя пользователя из: ", profile)
   }
   
-  # Определяем список репозиториев для обработки
+  # Имя таблицы ClickHouse
+  table_name <- "github_user_commits"
+  escaped_username <- gsub("'", "''", username)
+  
+  # Проверяем существование таблицы (функция из ClickHouseConnector.R)
+  table_exists <- exists("table_exists_custom", mode = "function") &&
+    table_exists_custom(conn, table_name)
+  
+  # Если таблица существует, удаляем старые записи для данного пользователя
+  if (table_exists) {
+    sql_delete <- paste0(
+      "ALTER TABLE ", table_name,
+      " DELETE WHERE profile = '", escaped_username, "'"
+    )
+    tryCatch(
+      clickhouse_request(conn, sql_delete, parse_json = FALSE),
+      error = function(e) warning("Не удалось удалить старые записи: ", e$message)
+    )
+  }
+  
+  # Определяем список репозиториев
   if (is.null(repos)) {
+    # Используем get_github_repos из ETL-Repos.R (без кэша, если он не адаптирован)
     repos_df <- get_github_repos(username, token)
     if (nrow(repos_df) == 0) {
       message("У пользователя нет публичных репозиториев.")
@@ -53,7 +87,6 @@ get_user_commits <- function(profile,
     message("Обрабатываю репозиторий: ", repo_full)
     
     tryCatch({
-      # Получаем список коммитов автора
       commits <- gh::gh(
         "GET /repos/{repo_full}/commits",
         repo_full = repo_full,
@@ -64,7 +97,6 @@ get_user_commits <- function(profile,
       )
       
       if (length(commits) > 0) {
-        # Базовая информация о коммитах
         repo_commits <- map_df(commits, function(cmt) {
           data.frame(
             repository = repo_full,
@@ -76,7 +108,6 @@ get_user_commits <- function(profile,
           )
         })
         
-        # Если нужна статистика изменений
         if (include_stats && nrow(repo_commits) > 0) {
           message("  Запрашиваю статистику для ", nrow(repo_commits), " коммитов...")
           stats <- map_df(repo_commits$sha, function(sha) {
@@ -106,7 +137,6 @@ get_user_commits <- function(profile,
               )
             })
           })
-          # Присоединяем статистику
           repo_commits <- repo_commits %>%
             left_join(stats, by = "sha")
         }
@@ -132,5 +162,23 @@ get_user_commits <- function(profile,
   
   commits_df <- bind_rows(all_commits)
   message("Всего собрано коммитов: ", nrow(commits_df))
+  
+  # Добавляем служебные колонки
+  commits_df <- commits_df %>%
+    mutate(
+      profile = username,
+      fetched_at = Sys.time()
+    )
+  
+  # Загружаем в ClickHouse
+  message("Сохраняю ", nrow(commits_df), " записей в ClickHouse...")
+  load_df_to_clickhouse(
+    df = commits_df,
+    table_name = table_name,
+    conn = conn,
+    overwrite = FALSE,
+    append = TRUE
+  )
+  
   return(commits_df)
 }

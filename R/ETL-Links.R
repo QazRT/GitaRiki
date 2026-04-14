@@ -1,18 +1,32 @@
-get_github_social_links <- function(profile, token = NULL) {
-  # Проверка и установка необходимых пакетов
+# ETL-Links.R
+# Функция для извлечения социальных ссылок из профиля GitHub
+# с кэшированием результатов в ClickHouse.
+#
+# Требуется предварительная загрузка ClickHouseConnector.R:
+#   source("R/ClickHouseConnector.R")
+
+get_github_social_links <- function(profile, token = NULL, conn = NULL) {
+  
+  # Проверяем, что передан объект подключения ClickHouse
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
+  }
+  
+  # Проверяем наличие необходимых пакетов
   required_packages <- c("gh", "httr", "dplyr", "stringr", "purrr")
   for (pkg in required_packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      install.packages(pkg)
+      stop("Пакет '", pkg, "' не установлен. Установите его вручную: install.packages('", pkg, "')")
     }
   }
+  
   library(gh)
   library(httr)
   library(dplyr)
   library(stringr)
   library(purrr)
   
-  # Вспомогательная функция для извлечения имени пользователя
+  # Вспомогательная функция для извлечения имени пользователя из профиля (строка или URL)
   extract_username <- function(input) {
     if (grepl("^[a-zA-Z0-9_-]+$", input)) {
       return(input)
@@ -27,60 +41,129 @@ get_github_social_links <- function(profile, token = NULL) {
     return(NULL)
   }
   
+  # Извлекает username из URL социальной сети (последний сегмент пути)
+  extract_username_from_url <- function(url, type) {
+    if (is.na(url)) return(NA_character_)
+    if (type %in% c("twitter", "instagram", "telegram", "vk", "github", "linkedin")) {
+      parts <- strsplit(gsub("^https?://[^/]+/", "", url), "/")[[1]]
+      if (length(parts) > 0 && parts[1] != "") return(parts[1])
+    }
+    return(NA_character_)
+  }
+  
+  # Классификация URL по домену
+  classify_url <- function(url) {
+    if (is.na(url)) return("other")
+    if (grepl("twitter\\.com|x\\.com", url)) {
+      return("twitter")
+    } else if (grepl("t\\.me|telegram\\.me", url)) {
+      return("telegram")
+    } else if (grepl("vk\\.com", url)) {
+      return("vk")
+    } else if (grepl("wa\\.me|whatsapp\\.com", url)) {
+      return("whatsapp")
+    } else if (grepl("linkedin\\.com", url)) {
+      return("linkedin")
+    } else if (grepl("instagram\\.com", url)) {
+      return("instagram")
+    } else if (grepl("facebook\\.com", url)) {
+      return("facebook")
+    } else if (grepl("youtube\\.com|youtu\\.be", url)) {
+      return("youtube")
+    } else if (grepl("github\\.com", url)) {
+      return("github")
+    } else {
+      return("other")
+    }
+  }
+  
   username <- extract_username(profile)
   if (is.null(username)) {
     stop("Не удалось извлечь имя пользователя из: ", profile)
   }
   
-  # Получаем данные пользователя из API
-  message("Получаю информацию о пользователе ", username, "...")
+  # Имя таблицы в ClickHouse
+  table_name <- "github_social_links"
+  
+  # 1. Проверяем наличие данных в ClickHouse
+  escaped_username <- gsub("'", "''", username)
+  sql_check <- paste0(
+    "SELECT COUNT(*) AS cnt FROM ", table_name,
+    " WHERE profile = '", escaped_username, "'"
+  )
+  
+  table_exists <- exists("table_exists_custom", mode = "function") &&
+    table_exists_custom(conn, table_name)
+  
+  if (table_exists) {
+    cnt_df <- tryCatch(
+      query_clickhouse(conn, sql_check),
+      error = function(e) {
+        warning("Не удалось проверить наличие данных в ClickHouse: ", e$message)
+        data.frame(cnt = 0)
+      }
+    )
+    if (nrow(cnt_df) > 0 && cnt_df$cnt[1] > 0) {
+      message("Данные для профиля ", username, " уже есть в ClickHouse. Загружаю из базы...")
+      sql_read <- paste0(
+        "SELECT * FROM ", table_name,
+        " WHERE profile = '", escaped_username, "'"
+      )
+      result <- query_clickhouse(conn, sql_read)
+      return(result)
+    }
+  }
+  
+  # 2. Данных нет – запрашиваем GitHub API
+  message("Получаю информацию о пользователе ", username, " через GitHub API...")
   user_data <- tryCatch({
     gh::gh("GET /users/{username}", username = username, .token = token)
   }, error = function(e) {
     stop("Ошибка при запросе к GitHub API: ", e$message)
   })
   
-  # Инициализируем пустой список для ссылок
   links <- list()
   
-  # 1. Поле blog
+  # --- Обработка поля blog ---
   if (!is.null(user_data$blog) && user_data$blog != "") {
     blog <- user_data$blog
-    # Проверяем, является ли blog ссылкой (содержит http:// или https://)
     if (grepl("^https?://", blog)) {
+      blog_url <- blog
+    } else {
+      # Пытаемся интерпретировать как осмысленную ссылку
+      if (grepl("\\.", blog) || grepl("^@?[a-zA-Z0-9_.]+$", blog)) {
+        # Если выглядит как Instagram username (без домена и точек)
+        if (grepl("^@?[a-zA-Z0-9_.]+$", blog) && !grepl("\\.", blog)) {
+          blog_url <- paste0("https://instagram.com/", gsub("^@", "", blog))
+        } else {
+          blog_url <- paste0("https://", blog)
+        }
+      } else {
+        blog_url <- NA_character_
+      }
+    }
+    
+    if (!is.na(blog_url)) {
+      tp <- classify_url(blog_url)
       links <- append(links, list(data.frame(
         source = "blog",
-        url = blog,
-        type = classify_url(blog),
-        username = NA_character_,
+        url = blog_url,
+        type = tp,
+        username = extract_username_from_url(blog_url, tp),
         stringsAsFactors = FALSE
       )))
     } else {
-      # Возможно, это просто текст, но может быть ссылкой без протокола
-      # Попробуем добавить https:// и проверить
-      if (grepl("\\.", blog)) {
-        tentative_url <- paste0("https://", blog)
-        links <- append(links, list(data.frame(
-          source = "blog",
-          url = tentative_url,
-          type = classify_url(tentative_url),
-          username = NA_character_,
-          stringsAsFactors = FALSE
-        )))
-      } else {
-        # Иначе сохраняем как текст, но без ссылки
-        links <- append(links, list(data.frame(
-          source = "blog",
-          url = NA_character_,
-          type = "text",
-          username = NA_character_,
-          stringsAsFactors = FALSE
-        )))
-      }
+      links <- append(links, list(data.frame(
+        source = "blog",
+        url = NA_character_,
+        type = "text",
+        username = NA_character_,
+        stringsAsFactors = FALSE
+      )))
     }
   }
   
-  # 2. Поле twitter_username
+  # --- Поле twitter_username ---
   if (!is.null(user_data$twitter_username) && user_data$twitter_username != "") {
     tw <- user_data$twitter_username
     links <- append(links, list(data.frame(
@@ -92,26 +175,26 @@ get_github_social_links <- function(profile, token = NULL) {
     )))
   }
   
-  # 3. Поле bio
+  # --- Обработка bio ---
   if (!is.null(user_data$bio) && user_data$bio != "") {
     bio <- user_data$bio
     
-    # Ищем все URL в тексте (http/https)
+    # Полные URL (http/https)
     url_pattern <- "https?://[^\\s]+"
     urls <- str_extract_all(bio, url_pattern)[[1]]
     if (length(urls) > 0) {
       for (u in urls) {
+        tp <- classify_url(u)
         links <- append(links, list(data.frame(
           source = "bio_url",
           url = u,
-          type = classify_url(u),
-          username = NA_character_,
+          type = tp,
+          username = extract_username_from_url(u, tp),
           stringsAsFactors = FALSE
         )))
       }
     }
     
-    # Ищем паттерны социальных сетей без протокола (например, t.me/username, vk.com/id123, @username)
     # Telegram: t.me/username или telegram.me/username
     tg_pattern <- "(?:t\\.me/|telegram\\.me/)([a-zA-Z0-9_]+)"
     tg_matches <- str_match_all(bio, tg_pattern)[[1]]
@@ -142,7 +225,7 @@ get_github_social_links <- function(profile, token = NULL) {
       }
     }
     
-    # WhatsApp: wa.me/1234567890 или whatsapp.com/channel/...
+    # WhatsApp: wa.me/... или whatsapp.com/...
     wa_pattern <- "(?:wa\\.me/|whatsapp\\.com/)([a-zA-Z0-9_/]+)"
     wa_matches <- str_match_all(bio, wa_pattern)[[1]]
     if (nrow(wa_matches) > 0) {
@@ -157,12 +240,43 @@ get_github_social_links <- function(profile, token = NULL) {
       }
     }
     
-    # Поиск username в формате @username (но может быть Twitter, Telegram и т.д.)
+    # Instagram: instagram.com/username
+    inst_pattern <- "(?:instagram\\.com/)([a-zA-Z0-9_.]+)"
+    inst_matches <- str_match_all(bio, inst_pattern)[[1]]
+    if (nrow(inst_matches) > 0) {
+      for (i in 1:nrow(inst_matches)) {
+        links <- append(links, list(data.frame(
+          source = "bio_instagram",
+          url = paste0("https://instagram.com/", inst_matches[i, 2]),
+          type = "instagram",
+          username = inst_matches[i, 2],
+          stringsAsFactors = FALSE
+        )))
+      }
+    }
+    
+    # Если в bio упоминается Instagram и есть @username
+    if (grepl("instagram", bio, ignore.case = TRUE)) {
+      at_inst_pattern <- "@([a-zA-Z0-9_.]+)"
+      at_inst_matches <- str_match_all(bio, at_inst_pattern)[[1]]
+      if (nrow(at_inst_matches) > 0) {
+        for (i in 1:nrow(at_inst_matches)) {
+          links <- append(links, list(data.frame(
+            source = "bio_instagram_mention",
+            url = paste0("https://instagram.com/", at_inst_matches[i, 2]),
+            type = "instagram",
+            username = at_inst_matches[i, 2],
+            stringsAsFactors = FALSE
+          )))
+        }
+      }
+    }
+    
+    # Общие упоминания @username (без привязки к конкретной соцсети)
     at_pattern <- "@([a-zA-Z0-9_]+)"
     at_matches <- str_match_all(bio, at_pattern)[[1]]
     if (nrow(at_matches) > 0) {
       for (i in 1:nrow(at_matches)) {
-        # Не можем точно определить тип, помечаем как "mention"
         links <- append(links, list(data.frame(
           source = "bio_mention",
           url = NA_character_,
@@ -174,42 +288,45 @@ get_github_social_links <- function(profile, token = NULL) {
     }
   }
   
-  # Объединяем все найденные ссылки
+  # Сборка результата
   if (length(links) == 0) {
     message("Не найдено ни одной ссылки на другие профили.")
-    return(data.frame())
+    result <- data.frame()
+  } else {
+    result <- bind_rows(links) %>%
+      distinct()
   }
   
-  result <- bind_rows(links) %>%
-    distinct()  # убираем дубликаты
+  # Добавляем служебные колонки
+  if (nrow(result) > 0) {
+    result <- result %>%
+      mutate(
+        profile = username,
+        fetched_at = Sys.time()
+      )
+  } else {
+    result <- data.frame(
+      source = character(),
+      url = character(),
+      type = character(),
+      username = character(),
+      profile = character(),
+      fetched_at = as.POSIXct(character()),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  # 3. Загрузка в ClickHouse
+  if (nrow(result) > 0) {
+    message("Загружаю социальные ссылки в ClickHouse...")
+    load_df_to_clickhouse(
+      df = result,
+      table_name = table_name,
+      conn = conn,
+      overwrite = FALSE,
+      append = TRUE
+    )
+  }
   
   return(result)
-}
-
-# Вспомогательная функция для классификации ссылки по домену
-classify_url <- function(url) {
-  if (is.na(url)) return("other")
-  domain <- urltools::domain(url)  # требует пакет urltools? можно и без него
-  # Но чтобы не добавлять зависимость, реализуем простую классификацию
-  if (grepl("twitter\\.com|x\\.com", url)) {
-    return("twitter")
-  } else if (grepl("t\\.me|telegram\\.me", url)) {
-    return("telegram")
-  } else if (grepl("vk\\.com", url)) {
-    return("vk")
-  } else if (grepl("wa\\.me|whatsapp\\.com", url)) {
-    return("whatsapp")
-  } else if (grepl("linkedin\\.com", url)) {
-    return("linkedin")
-  } else if (grepl("instagram\\.com", url)) {
-    return("instagram")
-  } else if (grepl("facebook\\.com", url)) {
-    return("facebook")
-  } else if (grepl("youtube\\.com|youtu\\.be", url)) {
-    return("youtube")
-  } else if (grepl("github\\.com", url)) {
-    return("github")  # может ссылаться на другой профиль GitHub?
-  } else {
-    return("other")
-  }
 }

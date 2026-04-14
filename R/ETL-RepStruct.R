@@ -1,16 +1,29 @@
+# ETL-RepStruct.R
+# Функция для получения структуры файлов и папок репозитория GitHub
+# с кэшированием результатов в ClickHouse.
+
+# Предполагается, что файл ClickHouseConnector.R уже загружен через source()
+# и доступны функции: query_clickhouse, load_df_to_clickhouse, table_exists_custom.
+
 get_repo_structure <- function(repo,
                                token = NULL,
                                recursive = FALSE,
                                get_content = FALSE,
-                               ref = NULL) {
+                               ref = NULL,
+                               conn = NULL) {
   
-  # Проверка и установка пакетов
-  required_packages <- c("gh", "dplyr", "purrr", "httr", "base64enc")
-  for (pkg in required_packages) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      install.packages(pkg)
-    }
+  # Проверяем, что передан объект подключения ClickHouse
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
+  
+  # Загружаем необходимые пакеты (предполагаем, что они уже установлены)
+  if (!requireNamespace("gh", quietly = TRUE)) stop("Пакет 'gh' не установлен.")
+  if (!requireNamespace("dplyr", quietly = TRUE)) stop("Пакет 'dplyr' не установлен.")
+  if (!requireNamespace("purrr", quietly = TRUE)) stop("Пакет 'purrr' не установлен.")
+  if (!requireNamespace("httr", quietly = TRUE)) stop("Пакет 'httr' не установлен.")
+  if (!requireNamespace("base64enc", quietly = TRUE)) stop("Пакет 'base64enc' не установлен.")
+  
   library(gh)
   library(dplyr)
   library(purrr)
@@ -19,12 +32,10 @@ get_repo_structure <- function(repo,
   
   # Вспомогательная функция для извлечения owner/repo из ссылки
   parse_repo <- function(input) {
-    # Если уже в формате "owner/repo" (без протокола и слешей)
     if (grepl("^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$", input)) {
       parts <- strsplit(input, "/")[[1]]
       return(list(owner = parts[1], repo = parts[2]))
     }
-    # Парсим URL
     parsed <- httr::parse_url(input)
     if (!is.null(parsed$path)) {
       path_parts <- strsplit(gsub("^/|/$", "", parsed$path), "/")[[1]]
@@ -39,41 +50,82 @@ get_repo_structure <- function(repo,
   owner <- repo_info$owner
   repo_name <- repo_info$repo
   
+  # Имя таблицы в ClickHouse для хранения структур репозиториев
+  table_name <- "github_repo_structure"
+  
+  # 1. Проверяем, есть ли уже данные в ClickHouse
+  # Экранируем значения для безопасного SQL
+  escaped_owner <- gsub("'", "''", owner)
+  escaped_repo  <- gsub("'", "''", repo_name)
+  escaped_ref   <- if (is.null(ref)) "NULL" else paste0("'", gsub("'", "''", ref), "'")
+  
+  sql_check <- paste0(
+    "SELECT COUNT(*) AS cnt FROM ", table_name,
+    " WHERE owner = '", escaped_owner, "'",
+    " AND repo = '", escaped_repo, "'",
+    " AND (ref = ", escaped_ref, " OR (ref IS NULL AND ", escaped_ref, " IS NULL))"
+  )
+  
+  # Проверяем существование таблицы; если её нет – создадим позже
+  table_exists <- exists("table_exists_custom", mode = "function") &&
+    table_exists_custom(conn, table_name)
+  
+  if (table_exists) {
+    cnt_df <- tryCatch(
+      query_clickhouse(conn, sql_check),
+      error = function(e) {
+        warning("Не удалось проверить наличие данных в ClickHouse: ", e$message)
+        data.frame(cnt = 0)
+      }
+    )
+    if (nrow(cnt_df) > 0 && cnt_df$cnt[1] > 0) {
+      message("Данные для ", owner, "/", repo_name,
+              if (!is.null(ref)) paste0("@", ref) else "",
+              " уже есть в ClickHouse. Загружаю из базы...")
+      # Читаем все записи для этого репозитория и ref
+      sql_read <- paste0(
+        "SELECT * FROM ", table_name,
+        " WHERE owner = '", escaped_owner, "'",
+        " AND repo = '", escaped_repo, "'",
+        " AND (ref = ", escaped_ref, " OR (ref IS NULL AND ", escaped_ref, " IS NULL))"
+      )
+      result <- query_clickhouse(conn, sql_read)
+      return(result)
+    }
+  }
+  
+  # 2. Данных нет – выполняем запрос к GitHub API
+  message("Получаю структуру репозитория ", owner, "/", repo_name, " через GitHub API...")
+  
   # Внутренняя рекурсивная функция для получения содержимого по пути
   fetch_contents <- function(path = "") {
-    # Формируем эндпоинт: если path пустой, то запрашиваем корень
-    if (path == "") {
-      endpoint <- "GET /repos/{owner}/{repo}/contents"
+    endpoint <- if (path == "") {
+      "GET /repos/{owner}/{repo}/contents"
     } else {
-      endpoint <- "GET /repos/{owner}/{repo}/contents/{path}"
+      "GET /repos/{owner}/{repo}/contents/{path}"
     }
     
-    tryCatch({
-      contents <- gh::gh(
+    contents <- tryCatch({
+      gh::gh(
         endpoint,
         owner = owner,
         repo = repo_name,
         path = path,
         ref = ref,
         .token = token,
-        .limit = Inf  # на случай, если файлов много (но обычно лимит 1000)
+        .limit = Inf
       )
     }, error = function(e) {
-      # Если ошибка 404 - возможно, путь не существует
       stop("Ошибка при запросе ", path, ": ", e$message)
     })
     
-    # GitHub API может вернуть либо объект (если это файл), либо массив (если папка)
-    # Приведём к списку для единообразия
+    # Приводим к списку для единообразия
     if (!is.list(contents) || is.null(names(contents))) {
-      # Это массив? Обычно для папки возвращается список элементов
       items <- contents
     } else {
-      # Это объект (файл) - обернём в список
       items <- list(contents)
     }
     
-    # Преобразуем каждый элемент в data.frame
     items_df <- map_df(items, function(item) {
       base <- data.frame(
         path = item$path %||% NA,
@@ -84,13 +136,9 @@ get_repo_structure <- function(repo,
         stringsAsFactors = FALSE
       )
       
-      # Если запрошено содержимое и это файл, пытаемся получить содержимое
       if (get_content && item$type == "file") {
         if (!is.null(item$content)) {
-          # Содержимое уже есть в ответе (если файл небольшой)
-          encoded <- item$content
-          # Убираем переносы строк (base64 может содержать \n)
-          encoded <- gsub("\n", "", encoded)
+          encoded <- gsub("\n", "", item$content)
           decoded <- tryCatch({
             rawToChar(base64decode(encoded))
           }, error = function(e) {
@@ -99,8 +147,6 @@ get_repo_structure <- function(repo,
           })
           base$content <- decoded
         } else {
-          # Если содержимого нет (файл слишком большой), можно попробовать отдельный запрос
-          # но для простоты оставим NA
           base$content <- NA_character_
         }
       } else {
@@ -110,12 +156,9 @@ get_repo_structure <- function(repo,
       base
     })
     
-    # Если нужна рекурсия, обрабатываем папки
     if (recursive) {
-      # Отбираем папки
       dirs <- items_df %>% filter(type == "dir")
       if (nrow(dirs) > 0) {
-        # Для каждой папки вызываем fetch_contents с её путём
         sub_dfs <- map(dirs$path, fetch_contents)
         items_df <- bind_rows(items_df, sub_dfs)
       }
@@ -124,7 +167,27 @@ get_repo_structure <- function(repo,
     return(items_df)
   }
   
-  message("Получаю структуру репозитория ", owner, "/", repo_name, "...")
   result <- fetch_contents("")
+  
+  # Добавляем служебные колонки: owner, repo, ref, fetched_at
+  result <- result %>%
+    mutate(
+      owner = owner,
+      repo = repo_name,
+      ref = if (is.null(ref)) NA_character_ else ref,
+      fetched_at = Sys.time()
+    )
+  
+  # 3. Загружаем результат в ClickHouse
+  message("Загружаю структуру в ClickHouse...")
+  # Если таблицы нет, она будет создана автоматически функцией load_df_to_clickhouse
+  load_df_to_clickhouse(
+    df = result,
+    table_name = table_name,
+    conn = conn,
+    overwrite = FALSE,   # не перезаписываем всю таблицу
+    append = TRUE        # добавляем новые записи
+  )
+  
   return(result)
 }
