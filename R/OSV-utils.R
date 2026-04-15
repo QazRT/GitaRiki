@@ -1,5 +1,32 @@
 # Internal helpers for OSV-related workflows.
 
+.gitariki_log <- function(...) {
+  invisible(NULL)
+}
+
+.osv_assert_scalar_character <- function(x, arg_name, allow_empty = FALSE) {
+  ok <- is.character(x) && length(x) == 1L && (allow_empty || nzchar(x))
+  if (!isTRUE(ok)) {
+    stop("`", arg_name, "` must be a ", if (allow_empty) "character scalar." else "non-empty character scalar.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+.osv_assert_scalar_logical <- function(x, arg_name) {
+  if (!(is.logical(x) && length(x) == 1L && !is.na(x))) {
+    stop("`", arg_name, "` must be TRUE/FALSE scalar.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+.osv_assert_scalar_numeric_ge <- function(x, arg_name, min_value = 0) {
+  ok <- is.numeric(x) && length(x) == 1L && is.finite(x) && !is.na(x) && x >= min_value
+  if (!isTRUE(ok)) {
+    stop("`", arg_name, "` must be numeric scalar >= ", min_value, ".", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
 .osv_null <- function(x, y) {
   if (is.null(x)) y else x
 }
