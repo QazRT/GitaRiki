@@ -1,7 +1,6 @@
-# ETL-ForeignDevelop.R
 # Функция для получения расширенной информации о пользователе GitHub
 # (репозитории, подписки, звёзды, активность по коммитам)
-# с сохранением в ClickHouse.
+# с использованием ClickHouse как кэша и дозагрузкой новых данных.
 
 get_github_user_info <- function(profile,
                                  token = NULL,
@@ -9,12 +8,10 @@ get_github_user_info <- function(profile,
                                  max_commits = 1000,
                                  conn = NULL) {
   
-  # Проверка подключения к ClickHouse
   if (is.null(conn)) {
     stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
   
-  # Проверка наличия пакетов (без автоматической установки)
   required_packages <- c("gh", "dplyr", "purrr", "httr")
   for (pkg in required_packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
@@ -26,7 +23,6 @@ get_github_user_info <- function(profile,
   library(purrr)
   library(httr)
   
-  # Вспомогательные функции -------------------------------------------------
   `%||%` <- function(x, y) if (is.null(x)) y else x
   
   extract_github_username <- function(input) {
@@ -60,74 +56,169 @@ get_github_user_info <- function(profile,
     }))
   }
   
-  # Извлечение имени пользователя
+  read_cached_rows <- function(table_name, where_sql) {
+    table_exists <- exists("table_exists_custom", mode = "function") &&
+      table_exists_custom(conn, table_name)
+    
+    if (!table_exists) {
+      return(data.frame())
+    }
+    
+    sql <- paste0("SELECT * FROM ", table_name, " WHERE ", where_sql)
+    tryCatch(
+      query_clickhouse(conn, sql),
+      error = function(e) {
+        warning("Не удалось загрузить данные из ClickHouse для таблицы ", table_name, ": ", e$message)
+        data.frame()
+      }
+    )
+  }
+  
+  save_incremental <- function(df,
+                               tbl_name,
+                               key_cols,
+                               latest_key_cols = key_cols,
+                               compare_cols = key_cols) {
+    make_typed_na <- function(template, n) {
+      if (inherits(template, "POSIXct") || inherits(template, "POSIXt")) {
+        return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
+      }
+      if (inherits(template, "Date")) {
+        return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
+      }
+      if (is.character(template)) return(rep(NA_character_, n))
+      if (is.integer(template)) return(rep(NA_integer_, n))
+      if (is.numeric(template)) return(rep(NA_real_, n))
+      if (is.logical(template)) return(rep(NA, n))
+      rep(NA_character_, n)
+    }
+    
+    existing_all <- read_cached_rows(tbl_name, paste0("profile = '", escaped_username, "'"))
+    
+    if ("fetched_at" %in% names(existing_all)) {
+      existing_all$fetched_at <- as.character(existing_all$fetched_at)
+    }
+    
+    if (nrow(existing_all) > 0) {
+      message("В ClickHouse уже есть данные в ", tbl_name, ": ", nrow(existing_all), " записей.")
+    }
+    
+    if (nrow(df) == 0) {
+      if (length(latest_key_cols) > 0 && nrow(existing_all) > 0) {
+        latest_existing <- existing_all %>%
+          arrange(desc(fetched_at)) %>%
+          distinct(across(all_of(latest_key_cols)), .keep_all = TRUE)
+        return(latest_existing)
+      }
+      return(existing_all)
+    }
+    
+    df <- df %>%
+      mutate(
+        profile = username,
+        fetched_at = format(Sys.Date(), "%Y-%m-%d")
+      )
+    
+    if ("fetched_at" %in% names(df)) {
+      df$fetched_at <- as.character(df$fetched_at)
+    }
+    
+    for (col in unique(c(compare_cols, latest_key_cols))) {
+      if (!col %in% names(existing_all)) {
+        existing_all[[col]] <- make_typed_na(df[[col]], nrow(existing_all))
+      }
+      if (!col %in% names(df)) {
+        df[[col]] <- make_typed_na(existing_all[[col]], nrow(df))
+      }
+    }
+    
+    latest_existing <- if (nrow(existing_all) > 0) {
+      existing_all %>%
+        arrange(desc(fetched_at)) %>%
+        distinct(across(all_of(latest_key_cols)), .keep_all = TRUE)
+    } else {
+      existing_all
+    }
+    
+    df_for_compare <- df %>%
+      distinct(across(all_of(compare_cols)), .keep_all = TRUE)
+    
+    if (nrow(latest_existing) > 0) {
+      new_rows <- anti_join(df_for_compare, latest_existing, by = compare_cols)
+    } else {
+      new_rows <- df_for_compare
+    }
+    
+    if (nrow(new_rows) > 0) {
+      message("Сохраняю новые записи в ", tbl_name, ": ", nrow(new_rows))
+      load_df_to_clickhouse(
+        df = new_rows,
+        table_name = tbl_name,
+        conn = conn,
+        overwrite = FALSE,
+        append = TRUE
+      )
+      existing_all <- bind_rows(existing_all, new_rows)
+    } else {
+      message("Новых записей для таблицы ", tbl_name, " не найдено.")
+    }
+    
+    existing_all %>%
+      arrange(desc(fetched_at)) %>%
+      distinct(across(all_of(latest_key_cols)), .keep_all = TRUE)
+  }
+  
   username <- extract_github_username(profile)
   if (is.null(username)) {
     stop("Не удалось извлечь имя пользователя из: ", profile)
   }
   escaped_username <- gsub("'", "''", username)
   
-  # Функция для удаления старых записей из таблицы перед вставкой
-  delete_old_records <- function(tbl_name) {
-    if (!exists("table_exists_custom", mode = "function")) return(FALSE)
-    if (!table_exists_custom(conn, tbl_name)) return(FALSE)
-    sql <- paste0("ALTER TABLE ", tbl_name, " DELETE WHERE profile = '", escaped_username, "'")
-    tryCatch({
-      clickhouse_request(conn, sql, parse_json = FALSE)
-      TRUE
-    }, error = function(e) {
-      warning("Не удалось удалить старые записи из ", tbl_name, ": ", e$message)
-      FALSE
-    })
-  }
-  
-  # Функция для загрузки data.frame в ClickHouse с предварительным удалением
-  save_to_clickhouse <- function(df, tbl_name) {
-    if (nrow(df) == 0) {
-      message("Таблица ", tbl_name, ": нет данных для сохранения.")
-      return(invisible(NULL))
-    }
-    delete_old_records(tbl_name)
-    df <- df %>% mutate(profile = username, fetched_at = Sys.time())
-    load_df_to_clickhouse(df = df, table_name = tbl_name, conn = conn,
-                          overwrite = FALSE, append = TRUE)
-    message("Сохранено в ", tbl_name, ": ", nrow(df), " записей.")
-  }
-  
-  # 1. Репозитории, принадлежащие пользователю
   message("Запрашиваю репозитории, принадлежащие пользователю ", username, "...")
   owned_repos <- tryCatch({
-    repos <- gh::gh("GET /users/{username}/repos",
-                    username = username, .limit = Inf, .token = token, .progress = TRUE)
+    repos <- gh::gh(
+      "GET /users/{username}/repos",
+      username = username,
+      .limit = Inf,
+      .token = token,
+      .progress = TRUE
+    )
     repo_to_df(repos)
   }, error = function(e) {
     warning("Не удалось получить репозитории: ", e$message)
     data.frame()
   })
   
-  # 2. Подписки (watched)
   message("Запрашиваю подписки пользователя ", username, "...")
   subscriptions <- tryCatch({
-    subs <- gh::gh("GET /users/{username}/subscriptions",
-                   username = username, .limit = Inf, .token = token, .progress = TRUE)
+    subs <- gh::gh(
+      "GET /users/{username}/subscriptions",
+      username = username,
+      .limit = Inf,
+      .token = token,
+      .progress = TRUE
+    )
     repo_to_df(subs)
   }, error = function(e) {
     warning("Не удалось получить подписки: ", e$message)
     data.frame()
   })
   
-  # 3. Звёзды (starred)
   message("Запрашиваю звёзды пользователя ", username, "...")
   starred <- tryCatch({
-    stars <- gh::gh("GET /users/{username}/starred",
-                    username = username, .limit = Inf, .token = token, .progress = TRUE)
+    stars <- gh::gh(
+      "GET /users/{username}/starred",
+      username = username,
+      .limit = Inf,
+      .token = token,
+      .progress = TRUE
+    )
     repo_to_df(stars)
   }, error = function(e) {
     warning("Не удалось получить звёзды: ", e$message)
     data.frame()
   })
   
-  # 4. Поиск коммитов во всех публичных репозиториях
   message("Выполняю поиск коммитов автора ", username, " (макс. ", max_commits, ")...")
   commits_df <- data.frame()
   activity_summary <- data.frame()
@@ -136,11 +227,13 @@ get_github_user_info <- function(profile,
     warning("Поиск коммитов требует аутентификации. Без токена эта часть будет пропущена.")
   } else {
     tryCatch({
-      search_result <- gh::gh("GET /search/commits",
-                              q = paste0("author:", username),
-                              .token = token,
-                              .limit = max_commits,
-                              .progress = TRUE)
+      search_result <- gh::gh(
+        "GET /search/commits",
+        q = paste0("author:", username),
+        .token = token,
+        .limit = max_commits,
+        .progress = TRUE
+      )
       items <- search_result$items
       
       if (length(items) > 0) {
@@ -154,21 +247,27 @@ get_github_user_info <- function(profile,
             url        = cmt$html_url %||% NA,
             stringsAsFactors = FALSE
           )
-        })
+        }) %>%
+          distinct(repository, sha, .keep_all = TRUE)
         
         if (include_commit_stats && nrow(commits_df) > 0) {
           message("Запрашиваю статистику изменений для ", nrow(commits_df), " коммитов...")
-          stats_list <- list()
+          stats_list <- vector("list", nrow(commits_df))
           for (i in seq_len(nrow(commits_df))) {
             if (i %% 10 == 0) message("  Обработано ", i, " из ", nrow(commits_df))
             sha <- commits_df$sha[i]
             repo <- commits_df$repository[i]
             if (is.na(repo) || is.na(sha)) next
-            tryCatch({
-              cmt_detail <- gh::gh("GET /repos/{repo}/commits/{sha}",
-                                   repo = repo, sha = sha, .token = token)
+            stats_list[[i]] <- tryCatch({
+              cmt_detail <- gh::gh(
+                "GET /repos/{repo}/commits/{sha}",
+                repo = repo,
+                sha = sha,
+                .token = token
+              )
               s <- cmt_detail$stats %||% list(additions = 0, deletions = 0, total = 0)
-              stats_list[[i]] <- data.frame(
+              data.frame(
+                repository = repo,
                 sha = sha,
                 additions = s$additions %||% 0,
                 deletions = s$deletions %||% 0,
@@ -177,7 +276,8 @@ get_github_user_info <- function(profile,
               )
             }, error = function(e) {
               warning("Не удалось получить статистику для коммита ", sha, ": ", e$message)
-              stats_list[[i]] <- data.frame(
+              data.frame(
+                repository = repo,
                 sha = sha,
                 additions = NA,
                 deletions = NA,
@@ -186,11 +286,12 @@ get_github_user_info <- function(profile,
               )
             })
           }
-          stats_df <- bind_rows(stats_list)
-          commits_df <- commits_df %>% left_join(stats_df, by = "sha")
+          stats_df <- bind_rows(stats_list) %>%
+            distinct(repository, sha, .keep_all = TRUE)
+          commits_df <- commits_df %>%
+            left_join(stats_df, by = c("repository", "sha"))
         }
         
-        # Агрегированная статистика по репозиториям
         if (nrow(commits_df) > 0) {
           if (include_commit_stats && "additions" %in% names(commits_df)) {
             activity_summary <- commits_df %>%
@@ -225,27 +326,58 @@ get_github_user_info <- function(profile,
     })
   }
   
-  # Сохранение всех полученных данных в ClickHouse
   message("Сохраняю данные в ClickHouse...")
-  save_to_clickhouse(owned_repos, "github_owned_repos")
-  save_to_clickhouse(subscriptions, "github_subscriptions")
-  save_to_clickhouse(starred, "github_starred")
-  if (nrow(commits_df) > 0) {
-    save_to_clickhouse(commits_df, "github_raw_commits")
-  }
-  if (nrow(activity_summary) > 0) {
-    save_to_clickhouse(activity_summary, "github_commits_activity")
+  
+  owned_repos_result <- save_incremental(
+    df = owned_repos,
+    tbl_name = "github_owned_repos",
+    key_cols = c("profile", "full_name")
+  )
+  
+  subscriptions_result <- save_incremental(
+    df = subscriptions,
+    tbl_name = "github_subscriptions",
+    key_cols = c("profile", "full_name")
+  )
+  
+  starred_result <- save_incremental(
+    df = starred,
+    tbl_name = "github_starred",
+    key_cols = c("profile", "full_name")
+  )
+  
+  raw_commits_result <- save_incremental(
+    df = commits_df,
+    tbl_name = "github_raw_commits",
+    key_cols = c("profile", "repository", "sha")
+  )
+  
+  activity_compare_cols <- c("profile", "repository", "total_commits", "first_commit", "last_commit")
+  if (include_commit_stats && nrow(activity_summary) > 0) {
+    activity_compare_cols <- c(
+      activity_compare_cols,
+      "total_additions",
+      "total_deletions",
+      "total_changes"
+    )
   }
   
-  # Формируем результат (тот же, что и раньше)
+  commits_activity_result <- save_incremental(
+    df = activity_summary,
+    tbl_name = "github_commits_activity",
+    key_cols = activity_compare_cols,
+    latest_key_cols = c("profile", "repository"),
+    compare_cols = activity_compare_cols
+  )
+  
   result <- list(
-    owned_repos      = owned_repos,
-    subscriptions    = subscriptions,
-    starred          = starred,
-    commits_activity = activity_summary,
-    raw_commits      = commits_df
+    owned_repos      = owned_repos_result,
+    subscriptions    = subscriptions_result,
+    starred          = starred_result,
+    commits_activity = commits_activity_result,
+    raw_commits      = raw_commits_result
   )
   
   message("Сбор данных завершён.")
-  return(result)
+  result
 }
