@@ -247,7 +247,8 @@ get_github_user_info <- function(profile,
             url        = cmt$html_url %||% NA,
             stringsAsFactors = FALSE
           )
-        })
+        }) %>%
+          distinct(repository, sha, .keep_all = TRUE)
         
         if (include_commit_stats && nrow(commits_df) > 0) {
           message("Запрашиваю статистику изменений для ", nrow(commits_df), " коммитов...")
@@ -266,6 +267,7 @@ get_github_user_info <- function(profile,
               )
               s <- cmt_detail$stats %||% list(additions = 0, deletions = 0, total = 0)
               data.frame(
+                repository = repo,
                 sha = sha,
                 additions = s$additions %||% 0,
                 deletions = s$deletions %||% 0,
@@ -275,6 +277,7 @@ get_github_user_info <- function(profile,
             }, error = function(e) {
               warning("Не удалось получить статистику для коммита ", sha, ": ", e$message)
               data.frame(
+                repository = repo,
                 sha = sha,
                 additions = NA,
                 deletions = NA,
@@ -283,8 +286,10 @@ get_github_user_info <- function(profile,
               )
             })
           }
-          stats_df <- bind_rows(stats_list)
-          commits_df <- commits_df %>% left_join(stats_df, by = "sha")
+          stats_df <- bind_rows(stats_list) %>%
+            distinct(repository, sha, .keep_all = TRUE)
+          commits_df <- commits_df %>%
+            left_join(stats_df, by = c("repository", "sha"))
         }
         
         if (nrow(commits_df) > 0) {

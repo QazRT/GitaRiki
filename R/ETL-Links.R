@@ -57,6 +57,9 @@ get_github_social_links <- function(profile, token = NULL, conn = NULL) {
     }
     
     if (nrow(fresh_df) == 0) {
+      if (ncol(existing_df) == 0) {
+        return(fresh_df)
+      }
       return(existing_df)
     }
     
@@ -357,6 +360,10 @@ get_github_social_links <- function(profile, token = NULL, conn = NULL) {
     table_name = table_name
   )
   
+  if (ncol(result) == 0) {
+    result <- fresh_df
+  }
+  
   result %>%
-    arrange(source, type, username, url)
+    dplyr::arrange(.data$source, .data$type, .data$username, .data$url)
 }
