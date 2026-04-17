@@ -1,7 +1,6 @@
-source("ETL-Repos.R")
-
 get_github_user_stats <- function(profile,
                                   token = NULL,
+                                  conn = NULL,
                                   include_events = TRUE,
                                   events_limit = 300) {
   required_packages <- c("gh", "dplyr", "purrr", "httr")
@@ -79,7 +78,7 @@ get_github_user_stats <- function(profile,
   })
 
 
-  owned_repos <- get_github_repos(username, token)
+  owned_repos <- get_github_repos(username, token, conn)
 
   language_stats <- if (nrow(owned_repos) > 0) {
     owned_repos %>%
