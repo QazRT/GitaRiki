@@ -1,6 +1,5 @@
-# ETL-RepStruct.R
 # Функция для получения структуры файлов и папок репозитория GitHub
-# с кэшированием результатов в ClickHouse.
+# с использованием ClickHouse как кэша и дозагрузкой новых элементов.
 
 # Предполагается, что файл ClickHouseConnector.R уже загружен через source()
 # и доступны функции: query_clickhouse, load_df_to_clickhouse, table_exists_custom.
@@ -12,12 +11,10 @@ get_repo_structure <- function(repo,
                                ref = NULL,
                                conn = NULL) {
   
-  # Проверяем, что передан объект подключения ClickHouse
   if (is.null(conn)) {
     stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
   
-  # Загружаем необходимые пакеты (предполагаем, что они уже установлены)
   if (!requireNamespace("gh", quietly = TRUE)) stop("Пакет 'gh' не установлен.")
   if (!requireNamespace("dplyr", quietly = TRUE)) stop("Пакет 'dplyr' не установлен.")
   if (!requireNamespace("purrr", quietly = TRUE)) stop("Пакет 'purrr' не установлен.")
@@ -30,7 +27,86 @@ get_repo_structure <- function(repo,
   library(httr)
   library(base64enc)
   
-  # Вспомогательная функция для извлечения owner/repo из ссылки
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+  
+  read_cached_rows <- function(table_name, where_sql) {
+    table_exists <- exists("table_exists_custom", mode = "function") &&
+      table_exists_custom(conn, table_name)
+    
+    if (!table_exists) {
+      return(data.frame())
+    }
+    
+    sql <- paste0("SELECT * FROM ", table_name, " WHERE ", where_sql)
+    tryCatch(
+      query_clickhouse(conn, sql),
+      error = function(e) {
+        warning("Не удалось загрузить структуру из ClickHouse: ", e$message)
+        data.frame()
+      }
+    )
+  }
+  
+  append_new_rows <- function(existing_df, fresh_df, key_cols, table_name) {
+    make_typed_na <- function(template, n) {
+      if (inherits(template, "POSIXct") || inherits(template, "POSIXt")) {
+        return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
+      }
+      if (inherits(template, "Date")) {
+        return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
+      }
+      if (is.character(template)) return(rep(NA_character_, n))
+      if (is.integer(template)) return(rep(NA_integer_, n))
+      if (is.numeric(template)) return(rep(NA_real_, n))
+      if (is.logical(template)) return(rep(NA, n))
+      rep(NA_character_, n)
+    }
+    
+    if (nrow(fresh_df) == 0) {
+      return(existing_df)
+    }
+    
+    if ("fetched_at" %in% names(existing_df)) {
+      existing_df$fetched_at <- as.character(existing_df$fetched_at)
+    }
+    if ("fetched_at" %in% names(fresh_df)) {
+      fresh_df$fetched_at <- as.character(fresh_df$fetched_at)
+    }
+    
+    for (col in key_cols) {
+      if (!col %in% names(existing_df)) {
+        existing_df[[col]] <- make_typed_na(fresh_df[[col]], nrow(existing_df))
+      }
+      if (!col %in% names(fresh_df)) {
+        fresh_df[[col]] <- make_typed_na(existing_df[[col]], nrow(fresh_df))
+      }
+    }
+    
+    fresh_df <- fresh_df %>%
+      distinct(across(all_of(key_cols)), .keep_all = TRUE)
+    
+    if (nrow(existing_df) > 0) {
+      new_rows <- anti_join(fresh_df, existing_df, by = key_cols)
+    } else {
+      new_rows <- fresh_df
+    }
+    
+    if (nrow(new_rows) > 0) {
+      message("Найдено новых элементов структуры для загрузки: ", nrow(new_rows))
+      load_df_to_clickhouse(
+        df = new_rows,
+        table_name = table_name,
+        conn = conn,
+        overwrite = FALSE,
+        append = TRUE
+      )
+      bind_rows(existing_df, new_rows)
+    } else {
+      message("Новых элементов структуры не найдено.")
+      existing_df
+    }
+  }
+  
   parse_repo <- function(input) {
     if (grepl("^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$", input)) {
       parts <- strsplit(input, "/")[[1]]
@@ -49,55 +125,29 @@ get_repo_structure <- function(repo,
   repo_info <- parse_repo(repo)
   owner <- repo_info$owner
   repo_name <- repo_info$repo
-  
-  # Имя таблицы в ClickHouse для хранения структур репозиториев
   table_name <- "github_repo_structure"
   
-  # 1. Проверяем, есть ли уже данные в ClickHouse
-  # Экранируем значения для безопасного SQL
   escaped_owner <- gsub("'", "''", owner)
-  escaped_repo  <- gsub("'", "''", repo_name)
-  escaped_ref   <- if (is.null(ref)) "NULL" else paste0("'", gsub("'", "''", ref), "'")
-  
-  sql_check <- paste0(
-    "SELECT COUNT(*) AS cnt FROM ", table_name,
-    " WHERE owner = '", escaped_owner, "'",
+  escaped_repo <- gsub("'", "''", repo_name)
+  where_sql <- paste0(
+    "owner = '", escaped_owner, "'",
     " AND repo = '", escaped_repo, "'",
-    " AND (ref = ", escaped_ref, " OR (ref IS NULL AND ", escaped_ref, " IS NULL))"
+    if (is.null(ref)) {
+      " AND isNull(ref)"
+    } else {
+      paste0(" AND ref = '", gsub("'", "''", ref), "'")
+    }
   )
   
-  # Проверяем существование таблицы; если её нет – создадим позже
-  table_exists <- exists("table_exists_custom", mode = "function") &&
-    table_exists_custom(conn, table_name)
-  
-  if (table_exists) {
-    cnt_df <- tryCatch(
-      query_clickhouse(conn, sql_check),
-      error = function(e) {
-        warning("Не удалось проверить наличие данных в ClickHouse: ", e$message)
-        data.frame(cnt = 0)
-      }
-    )
-    if (nrow(cnt_df) > 0 && cnt_df$cnt[1] > 0) {
-      message("Данные для ", owner, "/", repo_name,
-              if (!is.null(ref)) paste0("@", ref) else "",
-              " уже есть в ClickHouse. Загружаю из базы...")
-      # Читаем все записи для этого репозитория и ref
-      sql_read <- paste0(
-        "SELECT * FROM ", table_name,
-        " WHERE owner = '", escaped_owner, "'",
-        " AND repo = '", escaped_repo, "'",
-        " AND (ref = ", escaped_ref, " OR (ref IS NULL AND ", escaped_ref, " IS NULL))"
-      )
-      result <- query_clickhouse(conn, sql_read)
-      return(result)
-    }
+  existing_df <- read_cached_rows(table_name, where_sql)
+  if (nrow(existing_df) > 0) {
+    message("В ClickHouse уже есть структура для ", owner, "/", repo_name, ": ", nrow(existing_df), " записей.")
+  } else {
+    message("В ClickHouse пока нет структуры для ", owner, "/", repo_name, ".")
   }
   
-  # 2. Данных нет – выполняем запрос к GitHub API
   message("Получаю структуру репозитория ", owner, "/", repo_name, " через GitHub API...")
   
-  # Внутренняя рекурсивная функция для получения содержимого по пути
   fetch_contents <- function(path = "") {
     endpoint <- if (path == "") {
       "GET /repos/{owner}/{repo}/contents"
@@ -116,10 +166,17 @@ get_repo_structure <- function(repo,
         .limit = Inf
       )
     }, error = function(e) {
+      if (nrow(existing_df) > 0) {
+        warning("Не удалось обновить структуру через GitHub API. Возвращаю данные из ClickHouse: ", e$message)
+        return(NULL)
+      }
       stop("Ошибка при запросе ", path, ": ", e$message)
     })
     
-    # Приводим к списку для единообразия
+    if (is.null(contents)) {
+      return(NULL)
+    }
+    
     if (!is.list(contents) || is.null(names(contents))) {
       items <- contents
     } else {
@@ -160,34 +217,36 @@ get_repo_structure <- function(repo,
       dirs <- items_df %>% filter(type == "dir")
       if (nrow(dirs) > 0) {
         sub_dfs <- map(dirs$path, fetch_contents)
-        items_df <- bind_rows(items_df, sub_dfs)
+        sub_dfs <- compact(sub_dfs)
+        if (length(sub_dfs) > 0) {
+          items_df <- bind_rows(items_df, bind_rows(sub_dfs))
+        }
       }
     }
     
-    return(items_df)
+    items_df
   }
   
-  result <- fetch_contents("")
+  fresh_df <- fetch_contents("")
+  if (is.null(fresh_df)) {
+    return(existing_df)
+  }
   
-  # Добавляем служебные колонки: owner, repo, ref, fetched_at
-  result <- result %>%
+  fresh_df <- fresh_df %>%
     mutate(
       owner = owner,
       repo = repo_name,
       ref = if (is.null(ref)) NA_character_ else ref,
-      fetched_at = Sys.time()
+      fetched_at = format(Sys.Date(), "%Y-%m-%d")
     )
   
-  # 3. Загружаем результат в ClickHouse
-  message("Загружаю структуру в ClickHouse...")
-  # Если таблицы нет, она будет создана автоматически функцией load_df_to_clickhouse
-  load_df_to_clickhouse(
-    df = result,
-    table_name = table_name,
-    conn = conn,
-    overwrite = FALSE,   # не перезаписываем всю таблицу
-    append = TRUE        # добавляем новые записи
+  result <- append_new_rows(
+    existing_df = existing_df,
+    fresh_df = fresh_df,
+    key_cols = c("owner", "repo", "ref", "path", "sha", "type"),
+    table_name = table_name
   )
   
-  return(result)
+  result %>%
+    arrange(path, sha)
 }
