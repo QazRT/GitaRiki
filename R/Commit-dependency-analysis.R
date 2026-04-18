@@ -175,7 +175,14 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 
 .ch_delete_profile_rows <- function(conn, table_name, profile) {
   table_sql <- .ch_table_ident(conn, table_name)
-  sql <- paste0(
+  sql_sync <- paste0(
+    "ALTER TABLE ",
+    table_sql,
+    " DELETE WHERE profile = '",
+    .ch_escape_sql(profile),
+    "' SETTINGS mutations_sync = 1"
+  )
+  sql_async <- paste0(
     "ALTER TABLE ",
     table_sql,
     " DELETE WHERE profile = '",
@@ -185,10 +192,40 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 
   if (exists("clickhouse_request", mode = "function")) {
     tryCatch(
-      clickhouse_request(conn, sql, parse_json = FALSE),
-      error = function(e) NULL
+      clickhouse_request(conn, sql_sync, parse_json = FALSE),
+      error = function(e) {
+        # Fallback for ClickHouse versions/settings where inline SETTINGS is unavailable.
+        tryCatch(
+          clickhouse_request(conn, sql_async, parse_json = FALSE),
+          error = function(e2) NULL
+        )
+      }
     )
   }
+}
+
+.ch_add_column_if_missing <- function(conn, table_name, column_name, column_type = "Nullable(String)") {
+  if (!exists("clickhouse_request", mode = "function")) return(invisible(FALSE))
+  if (!is.character(column_name) || length(column_name) != 1L || !nzchar(column_name)) return(invisible(FALSE))
+  if (!grepl("^[A-Za-z_][A-Za-z0-9_]*$", column_name)) return(invisible(FALSE))
+
+  table_sql <- .ch_table_ident(conn, table_name)
+  sql <- paste0(
+    "ALTER TABLE ",
+    table_sql,
+    " ADD COLUMN IF NOT EXISTS ",
+    column_name,
+    " ",
+    column_type
+  )
+
+  tryCatch(
+    {
+      clickhouse_request(conn, sql, parse_json = FALSE)
+      TRUE
+    },
+    error = function(e) FALSE
+  )
 }
 
 .merge_commit_scan_frames <- function(cached_df, new_df, template_cols, key_cols) {
@@ -219,8 +256,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     "repository", "vulnerability_key", "osv_id",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
-    "introduced_sha", "introduced_date", "introduced_message", "introduced_dependency_files",
-    "fixed_sha", "fixed_date", "fixed_message", "fixed_dependency_files",
+    "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
+    "fixed_sha", "fixed_date", "fixed_message", "fixed_author", "fixed_dependency_files",
     "status"
   )
 
@@ -282,6 +319,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         sha = sha_i,
         date = if ("date" %in% names(srepo)) as.character(srepo$date[[i]]) else NA_character_,
         message = if ("message" %in% names(srepo)) as.character(srepo$message[[i]]) else NA_character_,
+        author = if ("commit_author" %in% names(srepo)) as.character(srepo$commit_author[[i]]) else NA_character_,
         dependency_files = if ("dependency_files" %in% names(srepo)) as.character(srepo$dependency_files[[i]]) else "",
         keys = unique(keys),
         key_rows = key_rows
@@ -292,6 +330,127 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   }
 
   .rbind_data_frames(per_repo, template_cols = template_cols)
+}
+
+.extract_commit_author_from_detail <- function(detail) {
+  if (is.null(detail)) return(NA_character_)
+  login <- .osv_to_scalar(detail$author$login)
+  if (.osv_non_empty(login)) return(login)
+  name <- .osv_to_scalar(detail$commit$author$name)
+  if (.osv_non_empty(name)) return(name)
+  NA_character_
+}
+
+.enrich_lifecycle_authors <- function(summary_df, lifecycle_df, token = NULL, debug = FALSE) {
+  out <- list(summary = summary_df, lifecycle = lifecycle_df)
+  if (!is.data.frame(lifecycle_df) || nrow(lifecycle_df) == 0L) return(out)
+  if (!all(c("repository", "introduced_sha", "fixed_sha") %in% names(lifecycle_df))) return(out)
+
+  is_missing_author <- function(x) {
+    v <- as.character(.osv_null(x, NA_character_))
+    is.na(v) | !nzchar(trimws(v))
+  }
+
+  lc <- lifecycle_df
+  if (!("introduced_author" %in% names(lc))) lc$introduced_author <- NA_character_
+  if (!("fixed_author" %in% names(lc))) lc$fixed_author <- NA_character_
+  lc$introduced_author <- as.character(lc$introduced_author)
+  lc$fixed_author <- as.character(lc$fixed_author)
+
+  sm <- summary_df
+  if (!is.data.frame(sm)) sm <- data.frame()
+  if (!("commit_author" %in% names(sm))) sm$commit_author <- NA_character_
+  if ("commit_author" %in% names(sm)) sm$commit_author <- as.character(sm$commit_author)
+
+  summary_map <- list()
+  if (nrow(sm) > 0L && all(c("repository", "sha", "commit_author") %in% names(sm))) {
+    for (i in seq_len(nrow(sm))) {
+      repo_i <- as.character(sm$repository[[i]])
+      sha_i <- as.character(sm$sha[[i]])
+      author_i <- as.character(sm$commit_author[[i]])
+      if (!.osv_non_empty(repo_i) || !.osv_non_empty(sha_i) || !.osv_non_empty(author_i)) next
+      summary_map[[paste(repo_i, sha_i, sep = "\r")]] <- author_i
+    }
+  }
+
+  fill_from_summary <- function(sha_col, author_col) {
+    for (i in seq_len(nrow(lc))) {
+      if (!is_missing_author(lc[[author_col]][[i]])) next
+      repo_i <- as.character(lc$repository[[i]])
+      sha_i <- as.character(lc[[sha_col]][[i]])
+      if (!.osv_non_empty(repo_i) || !.osv_non_empty(sha_i)) next
+      key <- paste(repo_i, sha_i, sep = "\r")
+      author <- summary_map[[key]]
+      if (.osv_non_empty(author)) lc[[author_col]][[i]] <<- author
+    }
+  }
+
+  fill_from_summary("introduced_sha", "introduced_author")
+  fill_from_summary("fixed_sha", "fixed_author")
+
+  need_fetch <- data.frame(repository = character(0), sha = character(0), stringsAsFactors = FALSE)
+  for (i in seq_len(nrow(lc))) {
+    repo_i <- as.character(lc$repository[[i]])
+    intro_sha <- as.character(lc$introduced_sha[[i]])
+    fixed_sha <- as.character(lc$fixed_sha[[i]])
+    if (is_missing_author(lc$introduced_author[[i]]) && .osv_non_empty(repo_i) && .osv_non_empty(intro_sha)) {
+      need_fetch <- rbind(need_fetch, data.frame(repository = repo_i, sha = intro_sha, stringsAsFactors = FALSE))
+    }
+    if (is_missing_author(lc$fixed_author[[i]]) && .osv_non_empty(repo_i) && .osv_non_empty(fixed_sha)) {
+      need_fetch <- rbind(need_fetch, data.frame(repository = repo_i, sha = fixed_sha, stringsAsFactors = FALSE))
+    }
+  }
+
+  if (nrow(need_fetch) > 0L) {
+    need_fetch <- unique(need_fetch)
+  }
+
+  can_fetch <- .osv_non_empty(token) && nrow(need_fetch) > 0L
+  fetched_map <- list()
+  if (isTRUE(can_fetch)) {
+    .debug_log(debug, "authors", "fetching missing commit authors from GitHub: ", nrow(need_fetch), " commits")
+    for (i in seq_len(nrow(need_fetch))) {
+      repo_i <- as.character(need_fetch$repository[[i]])
+      sha_i <- as.character(need_fetch$sha[[i]])
+      key <- paste(repo_i, sha_i, sep = "\r")
+      detail_info <- .gh_commit_detail_safe(repo_full = repo_i, sha = sha_i, token = token)
+      if (!is.null(detail_info$error) || is.null(detail_info$detail)) next
+      author_i <- .extract_commit_author_from_detail(detail_info$detail)
+      if (.osv_non_empty(author_i)) {
+        fetched_map[[key]] <- author_i
+      }
+    }
+    .debug_log(debug, "authors", "fetched authors: ", length(fetched_map), "/", nrow(need_fetch))
+  }
+
+  fill_from_fetched <- function(sha_col, author_col) {
+    for (i in seq_len(nrow(lc))) {
+      if (!is_missing_author(lc[[author_col]][[i]])) next
+      repo_i <- as.character(lc$repository[[i]])
+      sha_i <- as.character(lc[[sha_col]][[i]])
+      if (!.osv_non_empty(repo_i) || !.osv_non_empty(sha_i)) next
+      key <- paste(repo_i, sha_i, sep = "\r")
+      author <- fetched_map[[key]]
+      if (.osv_non_empty(author)) lc[[author_col]][[i]] <<- author
+    }
+  }
+
+  fill_from_fetched("introduced_sha", "introduced_author")
+  fill_from_fetched("fixed_sha", "fixed_author")
+
+  if (length(fetched_map) > 0L && nrow(sm) > 0L && all(c("repository", "sha", "commit_author") %in% names(sm))) {
+    for (i in seq_len(nrow(sm))) {
+      repo_i <- as.character(sm$repository[[i]])
+      sha_i <- as.character(sm$sha[[i]])
+      key <- paste(repo_i, sha_i, sep = "\r")
+      if (!is_missing_author(sm$commit_author[[i]]) || is.null(fetched_map[[key]])) next
+      sm$commit_author[[i]] <- fetched_map[[key]]
+    }
+  }
+
+  out$summary <- sm
+  out$lifecycle <- lc
+  out
 }
 
 .ch_load_commit_scan_cache <- function(conn, profile, repos = NULL, table_prefix = "github_commit_scan") {
@@ -396,6 +555,11 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   vulnerabilities_store <- enrich(vulnerabilities_df)
   lifecycle_store <- enrich(lifecycle_df)
   errors_store <- enrich(errors_df)
+
+  # Schema evolution for previously created cache tables.
+  .ch_add_column_if_missing(conn, tables$summary, "commit_author", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$lifecycle, "introduced_author", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$lifecycle, "fixed_author", "Nullable(String)")
 
   .ch_delete_profile_rows(conn, tables$summary, profile)
   .ch_delete_profile_rows(conn, tables$vulnerabilities, profile)
@@ -602,8 +766,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     "repository", "vulnerability_key", "osv_id",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
-    "introduced_sha", "introduced_date", "introduced_message", "introduced_dependency_files",
-    "fixed_sha", "fixed_date", "fixed_message", "fixed_dependency_files",
+    "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
+    "fixed_sha", "fixed_date", "fixed_message", "fixed_author", "fixed_dependency_files",
     "status"
   )
 
@@ -648,10 +812,12 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       introduced_sha = .osv_null(state$introduced$sha, NA_character_),
       introduced_date = .osv_null(state$introduced$date, NA_character_),
       introduced_message = .osv_null(state$introduced$message, NA_character_),
+      introduced_author = .osv_null(state$introduced$author, NA_character_),
       introduced_dependency_files = .osv_null(state$introduced$dependency_files, NA_character_),
       fixed_sha = if (!is.null(close_snapshot)) .osv_null(close_snapshot$sha, NA_character_) else NA_character_,
       fixed_date = if (!is.null(close_snapshot)) .osv_null(close_snapshot$date, NA_character_) else NA_character_,
       fixed_message = if (!is.null(close_snapshot)) .osv_null(close_snapshot$message, NA_character_) else NA_character_,
+      fixed_author = if (!is.null(close_snapshot)) .osv_null(close_snapshot$author, NA_character_) else NA_character_,
       fixed_dependency_files = if (!is.null(close_snapshot)) .osv_null(close_snapshot$dependency_files, NA_character_) else NA_character_,
       status = status,
       stringsAsFactors = FALSE
@@ -674,6 +840,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
               sha = .osv_null(snap$sha, NA_character_),
               date = .osv_null(snap$date, NA_character_),
               message = .osv_null(snap$message, NA_character_),
+              author = .osv_null(snap$author, NA_character_),
               dependency_files = .osv_null(snap$dependency_files, NA_character_)
             )
           ),
@@ -975,6 +1142,10 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     sha <- .osv_to_scalar(cmt$sha)
     commit_date <- .osv_to_scalar(cmt$commit$author$date)
     commit_message <- .osv_to_scalar(cmt$commit$message)
+    commit_author <- .osv_to_scalar(cmt$author$login)
+    if (!.osv_non_empty(commit_author)) {
+      commit_author <- .osv_to_scalar(cmt$commit$author$name)
+    }
 
     detail_info <- if (commit_idx <= length(commit_details)) commit_details[[commit_idx]] else NULL
     if (!is.null(detail_info) && !is.null(detail_info$error)) {
@@ -1011,6 +1182,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         sha = sha,
         date = commit_date,
         message = commit_message,
+        commit_author = commit_author,
         scanned = FALSE,
         dependency_files = "",
         vulnerability_count = 0L,
@@ -1037,6 +1209,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         sha = sha,
         date = commit_date,
         message = commit_message,
+        commit_author = commit_author,
         scanned = FALSE,
         dependency_files = paste(dep_files, collapse = ";"),
         vulnerability_count = NA_integer_,
@@ -1099,6 +1272,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         sha = sha,
         date = commit_date,
         message = commit_message,
+        author = commit_author,
         dependency_files = paste(dep_files, collapse = ";"),
         keys = unique(keys),
         key_rows = key_rows
@@ -1110,6 +1284,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       sha = sha,
       date = commit_date,
       message = commit_message,
+      commit_author = commit_author,
       scanned = !is.null(scan),
       dependency_files = paste(dep_files, collapse = ";"),
       vulnerability_count = as.integer(vuln_count),
@@ -1156,6 +1331,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 #' @param syft_path Path to `syft` executable.
 #' @param conn Optional ClickHouse connection object for ETL `get_github_repos()`.
 #' @param clickhouse_incremental If `TRUE` (default), use ClickHouse cache for incremental analysis.
+#' @param incremental_compare_commits_by_sha If `TRUE`, incremental mode refreshes commit list
+#' and compares commit SHAs with cache (ignores `since` optimization) to scan only truly new commits.
 #' @param clickhouse_cache_prefix Prefix for ClickHouse cache tables.
 #' @param dependency_patterns Regex patterns for dependency-manifest files.
 #' @param max_repos Optional max repositories to process.
@@ -1207,6 +1384,7 @@ analyze_user_commits_with_syft_osv <- function(
     debug_repo_every = 25L,
     conn = NULL,
     clickhouse_incremental = TRUE,
+    incremental_compare_commits_by_sha = FALSE,
     clickhouse_cache_prefix = "github_commit_scan",
     ...
 ) {
@@ -1229,6 +1407,7 @@ analyze_user_commits_with_syft_osv <- function(
   .osv_assert_scalar_logical(debug, "debug")
   .osv_assert_scalar_numeric_ge(debug_repo_every, "debug_repo_every", min_value = 1)
   .osv_assert_scalar_logical(clickhouse_incremental, "clickhouse_incremental")
+  .osv_assert_scalar_logical(incremental_compare_commits_by_sha, "incremental_compare_commits_by_sha")
   .osv_assert_scalar_character(clickhouse_cache_prefix, "clickhouse_cache_prefix")
 
   profile_trim <- trimws(profile)
@@ -1324,6 +1503,18 @@ analyze_user_commits_with_syft_osv <- function(
   )
   since_by_repo <- .osv_null(cache_state$since_by_repo, list())
   known_shas_by_repo <- .osv_null(cache_state$known_shas_by_repo, list())
+  if (isTRUE(cache_enabled) && isTRUE(incremental_compare_commits_by_sha)) {
+    since_by_repo <- list()
+    .debug_log(
+      debug, "cache",
+      "incremental_compare_commits_by_sha=TRUE: since-filter disabled; new commits detected by SHA diff against cache."
+    )
+  } else if (isTRUE(incremental_compare_commits_by_sha) && !isTRUE(cache_enabled)) {
+    .debug_log(
+      debug, "cache",
+      "incremental_compare_commits_by_sha=TRUE ignored because ClickHouse incremental cache is unavailable."
+    )
+  }
 
   parallel_repos_effective <- isTRUE(parallel_repos)
   repo_workers_effective <- as.integer(repo_workers)
@@ -1599,6 +1790,7 @@ analyze_user_commits_with_syft_osv <- function(
                 sha = NA_character_,
                 date = NA_character_,
                 message = NA_character_,
+                commit_author = NA_character_,
                 scanned = FALSE,
                 dependency_files = "",
                 vulnerability_count = NA_integer_,
@@ -1666,7 +1858,7 @@ analyze_user_commits_with_syft_osv <- function(
     }
   }
 
-  summary_template <- c("repository", "sha", "date", "message", "scanned", "dependency_files", "vulnerability_count", "status")
+  summary_template <- c("repository", "sha", "date", "message", "commit_author", "scanned", "dependency_files", "vulnerability_count", "status")
   vulnerabilities_template <- c(
     "osv_id", "summary", "details", "published", "modified", "aliases", "references",
     "query_purl", "query_version", "matched_purl", "matched_package", "matched_ecosystem",
@@ -1678,8 +1870,8 @@ analyze_user_commits_with_syft_osv <- function(
     "repository", "vulnerability_key", "osv_id",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
-    "introduced_sha", "introduced_date", "introduced_message", "introduced_dependency_files",
-    "fixed_sha", "fixed_date", "fixed_message", "fixed_dependency_files",
+    "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
+    "fixed_sha", "fixed_date", "fixed_message", "fixed_author", "fixed_dependency_files",
     "status"
   )
   errors_template <- c("repository", "sha", "stage", "error")
@@ -1720,6 +1912,14 @@ analyze_user_commits_with_syft_osv <- function(
     vulnerabilities_df = vulnerabilities_df
   )
   lifecycle_df <- .rbind_data_frames(list(lifecycle_df), template_cols = lifecycle_template)
+  enriched <- .enrich_lifecycle_authors(
+    summary_df = summary_df,
+    lifecycle_df = lifecycle_df,
+    token = token,
+    debug = debug
+  )
+  summary_df <- .osv_null(enriched$summary, summary_df)
+  lifecycle_df <- .osv_null(enriched$lifecycle, lifecycle_df)
   .debug_log(
     debug, "merge",
     "summary_new=", nrow(summary_new), ", summary_total=", nrow(summary_df),
