@@ -1,5 +1,4 @@
-# Функция для получения коммитов пользователя GitHub
-# с использованием ClickHouse как кэша и дозагрузкой новых коммитов.
+# Function to fetch GitHub user commits with ClickHouse caching.
 
 get_user_commits <- function(profile,
                              token = NULL,
@@ -7,17 +6,17 @@ get_user_commits <- function(profile,
                              max_repos = NULL,
                              include_stats = FALSE,
                              conn = NULL) {
-  
   if (is.null(conn)) {
     stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
   
-  required_packages <- c("gh", "dplyr", "purrr", "httr")
+  required_packages <- c("gh", "dplyr", "purrr", "httr", "jsonlite")
   for (pkg in required_packages) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
       stop("Пакет '", pkg, "' не установлен. Установите вручную: install.packages('", pkg, "')")
     }
   }
+  
   library(gh)
   library(dplyr)
   library(purrr)
@@ -43,21 +42,21 @@ get_user_commits <- function(profile,
     )
   }
   
-  append_new_rows <- function(existing_df, fresh_df, key_cols, table_name) {
-    make_typed_na <- function(template, n) {
-      if (inherits(template, "POSIXct") || inherits(template, "POSIXt")) {
-        return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
-      }
-      if (inherits(template, "Date")) {
-        return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
-      }
-      if (is.character(template)) return(rep(NA_character_, n))
-      if (is.integer(template)) return(rep(NA_integer_, n))
-      if (is.numeric(template)) return(rep(NA_real_, n))
-      if (is.logical(template)) return(rep(NA, n))
-      rep(NA_character_, n)
+  make_typed_na <- function(template, n) {
+    if (inherits(template, "POSIXct") || inherits(template, "POSIXt")) {
+      return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
     }
-    
+    if (inherits(template, "Date")) {
+      return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
+    }
+    if (is.character(template)) return(rep(NA_character_, n))
+    if (is.integer(template)) return(rep(NA_integer_, n))
+    if (is.numeric(template)) return(rep(NA_real_, n))
+    if (is.logical(template)) return(rep(NA, n))
+    rep(NA_character_, n)
+  }
+  
+  append_new_rows <- function(existing_df, fresh_df, key_cols, table_name) {
     if (nrow(fresh_df) == 0) {
       return(existing_df)
     }
@@ -81,10 +80,10 @@ get_user_commits <- function(profile,
     fresh_df <- fresh_df %>%
       distinct(across(all_of(key_cols)), .keep_all = TRUE)
     
-    if (nrow(existing_df) > 0) {
-      new_rows <- anti_join(fresh_df, existing_df, by = key_cols)
+    new_rows <- if (nrow(existing_df) > 0) {
+      anti_join(fresh_df, existing_df, by = key_cols)
     } else {
-      new_rows <- fresh_df
+      fresh_df
     }
     
     if (nrow(new_rows) > 0) {
@@ -116,6 +115,240 @@ get_user_commits <- function(profile,
     existing_path
   }
   
+  repo_owner <- function(repo_full_name) {
+    vapply(
+      repo_full_name,
+      function(x) {
+        if (is.na(x) || !nzchar(x)) {
+          return(NA_character_)
+        }
+        strsplit(x, "/", fixed = TRUE)[[1]][1]
+      },
+      character(1)
+    )
+  }
+  
+  collect_event_repos <- function(username, token = NULL, max_pages = 3) {
+    repo_names <- character()
+    
+    for (page in seq_len(max_pages)) {
+      events <- tryCatch({
+        gh::gh(
+          "GET /users/{username}/events/public",
+          username = username,
+          per_page = 100,
+          page = page,
+          .token = token,
+          .progress = FALSE
+        )
+      }, error = function(e) {
+        warning("Не удалось получить публичные события пользователя ", username, ": ", e$message)
+        NULL
+      })
+      
+      if (is.null(events) || length(events) == 0) {
+        break
+      }
+      
+      page_repos <- vapply(
+        events,
+        function(evt) evt$repo$name %||% NA_character_,
+        character(1)
+      )
+      
+      repo_names <- c(repo_names, page_repos)
+    }
+    
+    unique(repo_names[!is.na(repo_names) & nzchar(repo_names)])
+  }
+  
+  collect_contributed_repos <- function(username, token = NULL) {
+    if (is.null(token) || !nzchar(token)) {
+      return(character())
+    }
+    
+    query <- paste(
+      "query($login: String!, $cursor: String) {",
+      "  user(login: $login) {",
+      "    repositoriesContributedTo(",
+      "      first: 100,",
+      "      after: $cursor,",
+      "      includeUserRepositories: true,",
+      "      contributionTypes: [COMMIT]",
+      "    ) {",
+      "      nodes {",
+      "        nameWithOwner",
+      "      }",
+      "      pageInfo {",
+      "        hasNextPage",
+      "        endCursor",
+      "      }",
+      "    }",
+      "  }",
+      "}",
+      sep = "\n"
+    )
+    
+    repo_names <- character()
+    cursor <- NULL
+    
+    repeat {
+      response <- tryCatch({
+        httr::POST(
+          url = "https://api.github.com/graphql",
+          httr::add_headers(
+            Authorization = paste("bearer", token),
+            Accept = "application/vnd.github+json"
+          ),
+          encode = "json",
+          body = list(
+            query = query,
+            variables = list(
+              login = username,
+              cursor = cursor
+            )
+          )
+        )
+      }, error = function(e) {
+        warning("Не удалось получить список репозиториев с contributions для пользователя ", username, ": ", e$message)
+        NULL
+      })
+      
+      if (is.null(response)) {
+        break
+      }
+      
+      payload <- tryCatch(
+        httr::content(response, as = "parsed", type = "application/json", encoding = "UTF-8"),
+        error = function(e) NULL
+      )
+      
+      if (is.null(payload) || !is.null(payload$errors) || is.null(payload$data$user)) {
+        break
+      }
+      
+      repo_block <- payload$data$user$repositoriesContributedTo
+      nodes <- repo_block$nodes %||% list()
+      if (length(nodes) > 0) {
+        repo_names <- c(
+          repo_names,
+          vapply(nodes, function(node) node$nameWithOwner %||% NA_character_, character(1))
+        )
+      }
+      
+      page_info <- repo_block$pageInfo
+      if (is.null(page_info) || !isTRUE(page_info$hasNextPage)) {
+        break
+      }
+      
+      cursor <- page_info$endCursor %||% NULL
+      if (is.null(cursor) || !nzchar(cursor)) {
+        break
+      }
+    }
+    
+    unique(repo_names[!is.na(repo_names) & nzchar(repo_names)])
+  }
+  
+  collect_commits_from_repo <- function(repo_full, username, token = NULL, include_stats = FALSE) {
+    repo_commits <- data.frame()
+    
+    search_items <- tryCatch({
+      search_result <- gh::gh(
+        "GET /search/commits",
+        q = paste0("author:", username, " repo:", repo_full),
+        per_page = 100,
+        .limit = Inf,
+        .token = token,
+        .progress = FALSE
+      )
+      search_result$items %||% list()
+    }, error = function(e) {
+      NULL
+    })
+    
+    if (length(search_items) > 0) {
+      repo_commits <- map_df(search_items, function(cmt) {
+        data.frame(
+          repository = repo_full,
+          sha = cmt$sha %||% NA,
+          date = cmt$commit$author$date %||% NA,
+          message = cmt$commit$message %||% NA,
+          url = cmt$html_url %||% NA,
+          stringsAsFactors = FALSE
+        )
+      })
+    }
+    
+    if (nrow(repo_commits) == 0) {
+      api_commits <- tryCatch({
+        gh::gh(
+          "GET /repos/{repo_full}/commits",
+          repo_full = repo_full,
+          author = username,
+          .limit = Inf,
+          .token = token,
+          .progress = FALSE
+        )
+      }, error = function(e) {
+        NULL
+      })
+      
+      if (length(api_commits) > 0) {
+        repo_commits <- map_df(api_commits, function(cmt) {
+          data.frame(
+            repository = repo_full,
+            sha = cmt$sha %||% NA,
+            date = cmt$commit$author$date %||% NA,
+            message = cmt$commit$message %||% NA,
+            url = cmt$html_url %||% NA,
+            stringsAsFactors = FALSE
+          )
+        })
+      }
+    }
+    
+    repo_commits <- repo_commits %>%
+      distinct(repository, sha, .keep_all = TRUE)
+    
+    if (include_stats && nrow(repo_commits) > 0) {
+      stats_df <- map_df(repo_commits$sha, function(sha) {
+        tryCatch({
+          cmt_detail <- gh::gh(
+            "GET /repos/{repo_full}/commits/{sha}",
+            repo_full = repo_full,
+            sha = sha,
+            .token = token
+          )
+          stats <- cmt_detail$stats %||% list(additions = 0, deletions = 0, total = 0)
+          data.frame(
+            repository = repo_full,
+            sha = sha,
+            additions = stats$additions %||% 0,
+            deletions = stats$deletions %||% 0,
+            changes = stats$total %||% 0,
+            stringsAsFactors = FALSE
+          )
+        }, error = function(e) {
+          warning("Не удалось получить статистику для коммита ", sha, " в репозитории ", repo_full, ": ", e$message)
+          data.frame(
+            repository = repo_full,
+            sha = sha,
+            additions = NA,
+            deletions = NA,
+            changes = NA,
+            stringsAsFactors = FALSE
+          )
+        })
+      })
+      
+      repo_commits <- repo_commits %>%
+        left_join(stats_df, by = c("repository", "sha"))
+    }
+    
+    repo_commits
+  }
+  
   source(resolve_repos_script(), local = TRUE)
   
   username <- extract_github_username(profile)
@@ -135,15 +368,33 @@ get_user_commits <- function(profile,
   
   if (is.null(repos)) {
     repos_df <- get_github_repos(username, token = token, conn = conn)
-    if (nrow(repos_df) == 0) {
-      message("У пользователя нет публичных репозиториев.")
+    candidate_repos <- unique(c(
+      repos_df$full_name,
+      existing_df$repository,
+      collect_event_repos(username, token = token),
+      collect_contributed_repos(username, token = token)
+    ))
+    candidate_repos <- candidate_repos[!is.na(candidate_repos) & nzchar(candidate_repos)]
+    
+    if (length(candidate_repos) == 0) {
+      message("У пользователя не найдено репозиториев-кандидатов для поиска коммитов.")
       return(existing_df)
     }
-    if (!is.null(max_repos) && max_repos > 0 && max_repos < nrow(repos_df)) {
-      repos_df <- head(repos_df, max_repos)
-      message("Ограничено первыми ", max_repos, " репозиториями.")
+    
+    own_repo_list <- candidate_repos[repo_owner(candidate_repos) == username]
+    foreign_repo_list <- candidate_repos[repo_owner(candidate_repos) != username]
+    repo_list <- c(own_repo_list, foreign_repo_list)
+    
+    if (!is.null(max_repos) && max_repos > 0 && max_repos < length(repo_list)) {
+      repo_list <- head(repo_list, max_repos)
+      message("Ограничено первыми ", max_repos, " репозиториями-кандидатами.")
     }
-    repo_list <- repos_df$full_name
+    
+    message(
+      "Найдено репозиториев-кандидатов: ", length(repo_list),
+      " (свои: ", sum(repo_owner(repo_list) == username, na.rm = TRUE),
+      ", чужие: ", sum(repo_owner(repo_list) != username, na.rm = TRUE), ")."
+    )
   } else {
     repo_list <- repos
     message("Будут обработаны указанные репозитории (", length(repo_list), " шт.)")
@@ -159,60 +410,14 @@ get_user_commits <- function(profile,
     message("Обрабатываю репозиторий: ", repo_full)
     
     tryCatch({
-      commits <- gh::gh(
-        "GET /repos/{repo_full}/commits",
+      repo_commits <- collect_commits_from_repo(
         repo_full = repo_full,
-        author = username,
-        .limit = Inf,
-        .token = token,
-        .progress = FALSE
+        username = username,
+        token = token,
+        include_stats = include_stats
       )
       
-      if (length(commits) > 0) {
-        repo_commits <- map_df(commits, function(cmt) {
-          data.frame(
-            repository = repo_full,
-            sha        = cmt$sha %||% NA,
-            date       = cmt$commit$author$date %||% NA,
-            message    = cmt$commit$message %||% NA,
-            url        = cmt$html_url %||% NA,
-            stringsAsFactors = FALSE
-          )
-        })
-        
-        if (include_stats && nrow(repo_commits) > 0) {
-          message("  Запрашиваю статистику для ", nrow(repo_commits), " коммитов...")
-          stats <- map_df(repo_commits$sha, function(sha) {
-            tryCatch({
-              cmt_detail <- gh::gh(
-                "GET /repos/{repo_full}/commits/{sha}",
-                repo_full = repo_full,
-                sha = sha,
-                .token = token
-              )
-              stats <- cmt_detail$stats %||% list(additions = 0, deletions = 0, total = 0)
-              data.frame(
-                sha = sha,
-                additions = stats$additions %||% 0,
-                deletions = stats$deletions %||% 0,
-                changes   = stats$total %||% 0,
-                stringsAsFactors = FALSE
-              )
-            }, error = function(e) {
-              warning("Не удалось получить статистику для коммита ", sha, ": ", e$message)
-              data.frame(
-                sha = sha,
-                additions = NA,
-                deletions = NA,
-                changes = NA,
-                stringsAsFactors = FALSE
-              )
-            })
-          })
-          repo_commits <- repo_commits %>%
-            left_join(stats, by = "sha")
-        }
-        
+      if (nrow(repo_commits) > 0) {
         all_commits[[repo_full]] <- repo_commits
         message("  Найдено коммитов: ", nrow(repo_commits))
       } else {
@@ -233,6 +438,7 @@ get_user_commits <- function(profile,
   }
   
   commits_df <- bind_rows(all_commits) %>%
+    distinct(repository, sha, .keep_all = TRUE) %>%
     mutate(
       profile = username,
       fetched_at = format(Sys.Date(), "%Y-%m-%d")
