@@ -1,0 +1,12 @@
+CLICKHOUSE_HOST=your-clickhouse-host
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DB=your-database
+CLICKHOUSE_USER=your-user
+CLICKHOUSE_PASSWORD=your-password
+CLICKHOUSE_HTTPS=false
+
+CH_HOST=your-clickhouse-host
+CH_PORT=8123
+CH_DB=your-database
+CH_USER=your-user
+CH_PASSWORD=your-password

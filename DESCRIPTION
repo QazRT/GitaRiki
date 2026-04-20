@@ -32,6 +32,7 @@ Imports:
     curl,
     mongolite,
     gh,
+    shiny,
     utils,
     zip,
     archive
