@@ -2,7 +2,7 @@ Package: GitaRiki-OSAryans
 Type: Package
 Title: Tools for Downloading and Querying OSV Vulnerability Databases
 Version: 0.1.0
-Authors@R: 
+Authors@R: c(
     person(
       given = "Заргаров",
       family = "Александр",
@@ -21,6 +21,8 @@ Authors@R:
       email = "mironovpavel@yandex.ru",
       role = c("aut", "cre")
     )
+    )
+Author: Zargarov Aleksandr, Sokolova Maria, Mironov Pavel
 Description: 
     Provides utilities for analysing GitHub profiles
 License: MIT
@@ -32,9 +34,13 @@ Imports:
     curl,
     mongolite,
     gh,
+    httr,
+    dplyr,
+    purrr,
     utils,
     zip,
-    archive
+    archive,
+    DBI
 RoxygenNote: 7.2.3
 Suggests:
     knitr,
