@@ -1,47 +1,144 @@
 # Функция для получения списка репозиториев пользователя GitHub
-get_github_repos <- function(input, token = NULL) {
-  # Проверка и установка необходимых пакетов
-  if (!requireNamespace("gh", quietly = TRUE)) {
-    install.packages("gh")
+# с использованием ClickHouse как кэша и дозагрузкой новых данных.
+
+get_github_repos <- function(input, token = NULL, conn = NULL) {
+  
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
   }
-  if (!requireNamespace("httr", quietly = TRUE)) {
-    install.packages("httr")
-  }
-  if (!requireNamespace("dplyr", quietly = TRUE)) {
-    install.packages("dplyr")
+  
+  required_packages <- c("gh", "httr", "dplyr")
+  for (pkg in required_packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop("Пакет '", pkg, "' не установлен. Установите вручную: install.packages('", pkg, "')")
+    }
   }
   library(gh)
   library(httr)
   library(dplyr)
   
-  # Извлечение имени пользователя из ссылки или прямое использование
-  username <- extract_github_username(input)
-  if (is.null(username)) {
-    stop("Не удалось извлечь имя пользователя из ссылки: ", input)
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+  
+  read_cached_rows <- function(table_name, where_sql) {
+    table_exists <- exists("table_exists_custom", mode = "function") &&
+      table_exists_custom(conn, table_name)
+    
+    if (!table_exists) {
+      return(data.frame())
+    }
+    
+    sql <- paste0("SELECT * FROM ", table_name, " WHERE ", where_sql)
+    tryCatch(
+      query_clickhouse(conn, sql),
+      error = function(e) {
+        warning("Не удалось загрузить данные из ClickHouse: ", e$message)
+        data.frame()
+      }
+    )
   }
   
-  # Получение всех репозиториев (с автопагинацией через .limit = Inf)
-  message("Запрашиваю репозитории пользователя ", username, "...")
-  tryCatch({
-    repos <- gh::gh(
+  append_new_rows <- function(existing_df, fresh_df, key_cols, table_name) {
+    make_typed_na <- function(template, n) {
+      if (inherits(template, "POSIXct") || inherits(template, "POSIXt")) {
+        return(as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC"))
+      }
+      if (inherits(template, "Date")) {
+        return(as.Date(rep(NA_real_, n), origin = "1970-01-01"))
+      }
+      if (is.character(template)) return(rep(NA_character_, n))
+      if (is.integer(template)) return(rep(NA_integer_, n))
+      if (is.numeric(template)) return(rep(NA_real_, n))
+      if (is.logical(template)) return(rep(NA, n))
+      rep(NA_character_, n)
+    }
+    
+    if (nrow(fresh_df) == 0) {
+      return(existing_df)
+    }
+    
+    if ("fetched_at" %in% names(existing_df)) {
+      existing_df$fetched_at <- as.character(existing_df$fetched_at)
+    }
+    if ("fetched_at" %in% names(fresh_df)) {
+      fresh_df$fetched_at <- as.character(fresh_df$fetched_at)
+    }
+    
+    for (col in key_cols) {
+      if (!col %in% names(existing_df)) {
+        existing_df[[col]] <- make_typed_na(fresh_df[[col]], nrow(existing_df))
+      }
+      if (!col %in% names(fresh_df)) {
+        fresh_df[[col]] <- make_typed_na(existing_df[[col]], nrow(fresh_df))
+      }
+    }
+    
+    fresh_df <- fresh_df %>%
+      distinct(across(all_of(key_cols)), .keep_all = TRUE)
+    
+    if (nrow(existing_df) > 0) {
+      new_rows <- anti_join(fresh_df, existing_df, by = key_cols)
+    } else {
+      new_rows <- fresh_df
+    }
+    
+    if (nrow(new_rows) > 0) {
+      message("Найдено новых записей для загрузки в ClickHouse: ", nrow(new_rows))
+      load_df_to_clickhouse(
+        df = new_rows,
+        table_name = table_name,
+        conn = conn,
+        overwrite = FALSE,
+        append = TRUE
+      )
+      bind_rows(existing_df, new_rows)
+    } else {
+      message("Новых записей для загрузки в ClickHouse не найдено.")
+      existing_df
+    }
+  }
+  
+  username <- extract_github_username(input)
+  if (is.null(username)) {
+    stop("Не удалось извлечь имя пользователя из: ", input)
+  }
+  
+  table_name <- "github_repos"
+  escaped_username <- gsub("'", "''", username)
+  existing_df <- read_cached_rows(table_name, paste0("profile = '", escaped_username, "'"))
+  
+  if (nrow(existing_df) > 0) {
+    message("В ClickHouse уже есть данные по репозиториям для профиля ", username, ": ", nrow(existing_df), " записей.")
+  } else {
+    message("В ClickHouse пока нет репозиториев для профиля ", username, ".")
+  }
+  
+  message("Запрашиваю репозитории пользователя ", username, " через GitHub API...")
+  repos <- tryCatch(
+    gh::gh(
       "GET /users/{username}/repos",
       username = username,
       .limit = Inf,
       .token = token,
-      .progress = TRUE  # покажет прогресс, если много страниц
-    )
-  }, error = function(e) {
-    stop("Ошибка при запросе к GitHub API: ", e$message)
-  })
+      .progress = TRUE
+    ),
+    error = function(e) {
+      if (nrow(existing_df) > 0) {
+        warning("Не удалось обновить репозитории через GitHub API. Возвращаю данные из ClickHouse: ", e$message)
+        return(NULL)
+      }
+      stop("Ошибка при запросе к GitHub API: ", e$message)
+    }
+  )
   
-  # Если репозиториев нет, возвращаем пустую таблицу
-  if (length(repos) == 0) {
-    message("Репозитории не найдены.")
-    return(data.frame())
+  if (is.null(repos)) {
+    return(existing_df)
   }
   
-  # Преобразование списка репозиториев в data frame
-  # Выбираем только нужные поля
+  if (length(repos) == 0) {
+    message("Репозитории не найдены.")
+    return(existing_df)
+  }
+  
   repos_df <- bind_rows(lapply(repos, function(repo) {
     data.frame(
       name             = repo$name %||% NA,
@@ -59,26 +156,33 @@ get_github_repos <- function(input, token = NULL) {
       size             = repo$size %||% 0,
       stringsAsFactors = FALSE
     )
-  }))
+  })) %>%
+    mutate(
+      profile = username,
+      fetched_at = format(Sys.Date(), "%Y-%m-%d")
+    )
   
-  message("Получено репозиториев: ", nrow(repos_df))
-  return(repos_df)
+  message("Получено репозиториев из GitHub: ", nrow(repos_df))
+  
+  result <- append_new_rows(
+    existing_df = existing_df,
+    fresh_df = repos_df,
+    key_cols = c("profile", "full_name"),
+    table_name = table_name
+  )
+  
+  result %>%
+    arrange(full_name)
 }
 
-# Вспомогательная функция для извлечения имени пользователя из URL
+# Вспомогательная функция для извлечения имени пользователя из URL или строки
 extract_github_username <- function(input) {
-  # Если входная строка уже похожа на имя (без слешей и протокола)
   if (grepl("^[a-zA-Z0-9_-]+$", input)) {
     return(input)
   }
-  
-  # Парсим URL
   parsed <- httr::parse_url(input)
-  # Путь должен содержать что-то после домена
   if (!is.null(parsed$path)) {
-    # Убираем ведущие и замыкающие слеши и разбиваем по слешам
     parts <- strsplit(gsub("^/|/$", "", parsed$path), "/")[[1]]
-    # Первая часть пути — это имя пользователя
     if (length(parts) >= 1) {
       return(parts[1])
     }
@@ -86,14 +190,5 @@ extract_github_username <- function(input) {
   return(NULL)
 }
 
-# Оператор %||% для подстановки значений по умолчанию (из base R)
+# Оператор %||% для удобства
 `%||%` <- function(x, y) if (is.null(x)) y else x
-
-# Пример использования:
-# 1. Без токена (ограничение 60 запросов в час)
-# repos_df <- get_github_repos("https://github.com/torvalds")
-# head(repos_df)
-
-# 2. С токеном (рекомендуется). Токен можно передать напрямую или установить
-#    переменную окружения GITHUB_PAT (например, Sys.setenv(GITHUB_PAT = "ваш_токен"))
-# repos_df <- get_github_repos("https://github.com/torvalds", token = Sys.getenv("GITHUB_PAT"))

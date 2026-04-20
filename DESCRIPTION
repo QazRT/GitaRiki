@@ -30,6 +30,8 @@ Depends: R (>= 4.0.0)
 Imports:
     jsonlite,
     curl,
+    mongolite,
+    gh,
     utils,
     zip,
     archive
