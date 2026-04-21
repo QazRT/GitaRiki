@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 70" role="img" aria-label="Mini Horus">
+  <defs>
+    <linearGradient id="wing" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff0a6"/>
+      <stop offset="0.45" stop-color="#d7a12b"/>
+      <stop offset="1" stop-color="#7c1016"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101929"/>
+      <stop offset="1" stop-color="#050204"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <path d="M19 38 C42 12 72 8 101 24 C122 35 143 32 153 22 C145 45 124 58 100 53 C72 47 45 54 19 38 Z" fill="url(#wing)" stroke="#421016" stroke-width="3"/>
+  <path d="M32 39 C56 30 84 27 113 35" fill="none" stroke="#fff2b2" stroke-width="4" stroke-linecap="round" opacity=".75"/>
+  <path d="M68 38 C82 23 105 18 122 29 C112 41 90 48 68 38 Z" fill="url(#body)" stroke="#d7a12b" stroke-width="3"/>
+  <path d="M113 27 L150 12 L131 37 Z" fill="#d7a12b" stroke="#421016" stroke-width="3"/>
+  <circle cx="105" cy="30" r="4" fill="#ff2933" filter="url(#glow)"/>
+  <path d="M76 44 L63 63 M89 45 L82 65" stroke="#d7a12b" stroke-width="5" stroke-linecap="round"/>
+</svg>

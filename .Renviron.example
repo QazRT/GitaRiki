@@ -10,3 +10,9 @@ CH_PORT=8123
 CH_DB=your-database
 CH_USER=your-user
 CH_PASSWORD=your-password
+
+OSV_MONGO_URL=mongodb://localhost:27017
+OSV_MONGO_DB=osv
+OSV_MONGO_COLLECTION=vulns
+MONGODB_URI=mongodb://localhost:27017
+MONGO_URI=mongodb://localhost:27017

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 190" role="img" aria-label="Mini Thoth">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff2ad"/>
+      <stop offset="0.52" stop-color="#d8a72f"/>
+      <stop offset="1" stop-color="#8d3f0d"/>
+    </linearGradient>
+    <linearGradient id="linen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff8e0"/>
+      <stop offset="1" stop-color="#d9eef6"/>
+    </linearGradient>
+    <linearGradient id="shadow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#131826"/>
+      <stop offset="1" stop-color="#07030a"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <ellipse cx="83" cy="170" rx="45" ry="10" fill="#050205" opacity=".35"/>
+  <path d="M47 76 C33 100 32 139 45 161 C58 181 105 181 119 160 C132 140 127 98 111 76 Z" fill="url(#linen)" stroke="#8b151b" stroke-width="4"/>
+  <path d="M53 84 C68 97 95 99 112 84 L118 156 C101 169 63 169 45 156 Z" fill="#111727" opacity=".92"/>
+  <path d="M61 91 L101 91 L111 150 C99 162 66 162 53 150 Z" fill="#f7f0d3" opacity=".94"/>
+  <path d="M62 100 H102 M59 115 H105 M57 130 H108" stroke="#d7a430" stroke-width="4" stroke-linecap="round" opacity=".86"/>
+  <path d="M70 77 C59 68 51 55 54 39 C58 18 84 12 103 24 C120 35 122 59 108 74 C98 84 82 86 70 77 Z" fill="url(#shadow)" stroke="#d7a430" stroke-width="4"/>
+  <path d="M95 42 C122 34 142 45 149 60 C129 60 112 64 96 76 Z" fill="#07090e" stroke="#d7a430" stroke-width="4"/>
+  <path d="M96 47 C117 43 131 49 138 57 C122 57 110 61 98 70 Z" fill="#f5f0d7" opacity=".95"/>
+  <path d="M62 44 C45 35 35 33 24 38 C33 47 45 54 59 57 Z" fill="#07090e" stroke="#d7a430" stroke-width="4"/>
+  <circle cx="83" cy="51" r="5" fill="#f11b2d" filter="url(#glow)"/>
+  <path d="M75 24 C75 13 84 8 92 8 C89 18 91 25 101 31 C89 34 80 32 75 24 Z" fill="url(#gold)" stroke="#5e2307" stroke-width="3"/>
+  <path d="M69 79 L94 79 L90 94 L73 94 Z" fill="url(#gold)" stroke="#5e2307" stroke-width="3"/>
+  <circle cx="82" cy="86" r="6" fill="#31c5d7" stroke="#5e2307" stroke-width="3"/>
+  <path d="M42 107 C25 112 18 130 20 148 C35 143 45 130 50 112 Z" fill="url(#gold)" stroke="#5e2307" stroke-width="3"/>
+  <path d="M120 107 C137 112 144 130 142 148 C127 143 117 130 112 112 Z" fill="url(#gold)" stroke="#5e2307" stroke-width="3"/>
+</svg>
