@@ -4,9 +4,11 @@
 .RData
 .Renviron
 .Rlibs
+R/analysis_output/
+osv_db/
+syft.exe
 *.log
 *.tmp
 tmp/
 dist/
 node_modules/
-

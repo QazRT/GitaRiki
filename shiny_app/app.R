@@ -370,18 +370,36 @@ set_plots_ui <- function(report) {
         if (is.null(src)) {
           return(NULL)
         }
+        label <- set_plot_label(path)
         div(
           class = "set-plot-card",
-          img(src = src, class = "set-plot-image", alt = set_plot_label(path)),
-          div(class = "set-plot-caption", set_plot_label(path))
+          tags$button(
+            type = "button",
+            class = "set-plot-button",
+            `data-src` = src,
+            `data-label` = label,
+            img(src = src, class = "set-plot-image", alt = label)
+          ),
+          div(class = "set-plot-caption", label)
         )
       })
     )
   )
 }
 
+report_theme_value <- function(report, fallback = "hell") {
+  theme <- report$theme %||% report$launch_theme %||% fallback
+  if (!theme %in% c("hell", "heaven")) {
+    theme <- fallback
+  }
+  theme
+}
+
 set_title_page <- function(report) {
-  theme <- report$theme %||% "hell"
+  theme <- report$view_theme %||% report_theme_value(report, fallback = "hell")
+  if (!theme %in% c("hell", "heaven")) {
+    theme <- "hell"
+  }
   is_heaven <- identical(theme, "heaven")
   world <- if (is_heaven) "божественного мира" else "загробного мира"
   oath <- if (is_heaven) {
@@ -419,12 +437,20 @@ set_report_screen <- function(report) {
     return(div(class = "home", div(class = "form", h2(class = "section-title", "Отчет еще не готов"))))
   }
 
+  protocol_type <- tolower(report$protocol_type %||% "set")
+  protocol_label <- report$protocol_label %||% if (identical(protocol_type, "isis")) "Исида" else "Сет"
+  switch_button <- if (identical(protocol_type, "set")) {
+    actionButton("run_isis_after_report", "Запустить Исиду", class = "run-button")
+  } else {
+    actionButton("run_set_after_report", "Запустить Сета", class = "run-button")
+  }
+
   div(
     class = "home set-report-page",
     brand_block(),
     div(
       class = "form set-report-form",
-      h2(class = "section-title", paste("Отчет Сета:", report$profile %||% "")),
+      h2(class = "section-title", paste("Отчет", protocol_label, ":", report$profile %||% "")),
       p(class = "account-copy", paste("Собран:", report$generated_at %||% "")),
       set_title_page(report),
       lapply(report$sections, function(section) {
@@ -436,31 +462,386 @@ set_report_screen <- function(report) {
         )
       }),
       set_plots_ui(report),
+      switch_button,
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
     )
   )
 }
 
-archive_status_label <- function(status) {
-  switch(status %||% "active", active = "активен", archived = "заархивировано", status)
+boot_screen <- function() {
+  div(
+    class = "home",
+    brand_block(),
+    div(
+      class = "form menu-form",
+      h2(class = "section-title", "Пробуждение врат"),
+      p(class = "account-copy", "Проверяем сохраненный вход.")
+    )
+  )
 }
 
-archive_screen <- function(records) {
+archive_status_label <- function(status) {
+  switch(status %||% "active", active = "активен", archived = "заархивировано", deleted = "удален", status)
+}
+
+archive_protocol_label <- function(protocol_type) {
+  switch(tolower(protocol_type %||% "set"), set = "Сет", isis = "Исида", protocol_type %||% "—")
+}
+
+pdf_theme <- function(mode = "hell") {
+  if (identical(mode, "heaven")) {
+    return(list(
+      bg = "#eef8ff",
+      panel = "#f8fcff",
+      line = "#84c9e7",
+      accent = "#c78a00",
+      gold = "#d4a32c",
+      ink = "#183244",
+      muted = "#5b7f93"
+    ))
+  }
+
+  list(
+    bg = "#130305",
+    panel = "#22070a",
+    line = "#9b121d",
+    accent = "#e01824",
+    gold = "#d8a927",
+    ink = "#fff5f5",
+    muted = "#d6a0a0"
+  )
+}
+
+pdf_asset_path <- function(filename) {
+  file.path(app_dir, "www", filename)
+}
+
+pdf_read_raster <- local({
+  cache <- new.env(parent = emptyenv())
+  function(path) {
+    normalized <- normalizePath(path, winslash = "/", mustWork = FALSE)
+    if (exists(normalized, envir = cache, inherits = FALSE)) {
+      return(get(normalized, envir = cache, inherits = FALSE))
+    }
+    if (!file.exists(normalized) || !requireNamespace("png", quietly = TRUE)) {
+      return(NULL)
+    }
+    img <- tryCatch(png::readPNG(normalized), error = function(e) NULL)
+    if (is.null(img)) {
+      return(NULL)
+    }
+    raster <- grDevices::as.raster(img)
+    assign(normalized, raster, envir = cache)
+    raster
+  }
+})
+
+pdf_draw_raster <- function(path, xleft, ybottom, xright, ytop) {
+  raster <- pdf_read_raster(path)
+  if (is.null(raster)) {
+    return(invisible(FALSE))
+  }
+  graphics::rasterImage(raster, xleft, ybottom, xright, ytop, interpolate = TRUE)
+  invisible(TRUE)
+}
+
+pdf_new_page <- function(theme = pdf_theme()) {
+  graphics::par(
+    mar = c(0, 0, 0, 0),
+    oma = c(0, 0, 0, 0),
+    xaxs = "i",
+    yaxs = "i",
+    xpd = NA
+  )
+  graphics::plot.new()
+  graphics::plot.window(xlim = c(0, 1), ylim = c(0, 1), asp = NA)
+  graphics::rect(-0.02, -0.02, 1.02, 1.02, col = theme$bg, border = NA)
+  graphics::rect(0.008, 0.008, 0.992, 0.992, col = theme$panel, border = theme$line, lwd = 1.2)
+  graphics::rect(0.028, 0.028, 0.972, 0.972, border = theme$gold, lwd = 0.8)
+}
+
+pdf_text_page <- function(title, lines, cex = 0.82, theme = pdf_theme()) {
+  pdf_new_page(theme)
+  y <- 0.95
+  graphics::text(0.06, y, title, adj = c(0, 1), cex = 1.25, font = 2, col = theme$ink)
+  graphics::segments(0.06, y - 0.035, 0.94, y - 0.035, col = theme$line, lwd = 1)
+  y <- y - 0.06
+  for (line in lines) {
+    wrapped <- strwrap(as.character(line), width = 88)
+    for (part in wrapped) {
+      if (y < 0.06) {
+        pdf_new_page(theme)
+        y <- 0.95
+      }
+      graphics::text(0.06, y, part, adj = c(0, 1), cex = cex, col = theme$muted)
+      y <- y - 0.035
+    }
+    y <- y - 0.012
+  }
+}
+
+pdf_prepare_table <- function(df) {
+  if (!is.data.frame(df) || nrow(df) == 0L || ncol(df) == 0L) {
+    return(NULL)
+  }
+  df <- df[, seq_len(min(ncol(df), 4L)), drop = FALSE]
+  as.data.frame(lapply(df, function(col) {
+    value <- as.character(col)
+    value[is.na(value) | !nzchar(value)] <- "—"
+    gsub("[\r\n\t]+", " ", value)
+  }), stringsAsFactors = FALSE, check.names = FALSE)
+}
+
+pdf_draw_table_rows <- function(df, rows, top, theme) {
+  if (is.null(df) || length(rows) == 0L) {
+    return(top)
+  }
+  left <- 0.07
+  right <- 0.93
+  row_h <- 0.058
+  header_h <- 0.054
+  col_w <- (right - left) / ncol(df)
+  graphics::rect(left, top - header_h, right, top, col = theme$accent, border = theme$line, lwd = 1)
+  for (j in seq_len(ncol(df))) {
+    x0 <- left + (j - 1L) * col_w
+    graphics::rect(x0, top - header_h, x0 + col_w, top, border = theme$line, lwd = 0.8)
+    graphics::text(x0 + 0.009, top - 0.014, names(df)[j], adj = c(0, 1), cex = 0.72, font = 2, col = theme$ink)
+  }
+  y <- top - header_h
+  for (i in rows) {
+    graphics::rect(left, y - row_h, right, y, col = adjustcolor(theme$panel, alpha.f = 0.92), border = theme$line, lwd = 0.6)
+    for (j in seq_len(ncol(df))) {
+      x0 <- left + (j - 1L) * col_w
+      graphics::rect(x0, y - row_h, x0 + col_w, y, border = theme$line, lwd = 0.5)
+      parts <- strwrap(df[i, j][[1]], width = max(10L, floor(col_w * 56)))
+      parts <- utils::head(parts, 3L)
+      graphics::text(x0 + 0.009, y - 0.010, paste(parts, collapse = "\n"), adj = c(0, 1), cex = 0.66, col = theme$ink)
+    }
+    y <- y - row_h
+  }
+  y
+}
+
+pdf_draw_section <- function(section, theme) {
+  title <- section$title %||% "Раздел"
+  text_lines <- strwrap(section$text %||% "", width = 90)
+  if (length(text_lines) == 0L) {
+    text_lines <- "Без текстового описания."
+  }
+  df <- pdf_prepare_table(section$table)
+  first_text_lines <- utils::head(text_lines, 10L)
+  remaining_text <- text_lines[-seq_along(first_text_lines)]
+
+  pdf_new_page(theme)
+  graphics::text(0.07, 0.93, title, adj = c(0, 1), cex = 1.15, font = 2, col = theme$ink)
+  graphics::segments(0.07, 0.895, 0.93, 0.895, col = theme$line, lwd = 1)
+  y <- 0.865
+  for (line in first_text_lines) {
+    graphics::text(0.07, y, line, adj = c(0, 1), cex = 0.77, col = theme$muted)
+    y <- y - 0.028
+  }
+  if (length(remaining_text) > 0L) {
+    graphics::text(0.07, y, "Продолжение описания перенесено на следующий лист.", adj = c(0, 1), cex = 0.72, font = 3, col = theme$gold)
+    y <- y - 0.04
+  }
+  if (is.null(df)) {
+    graphics::text(0.07, y - 0.03, "Нет данных для этого раздела.", adj = c(0, 1), cex = 0.76, col = theme$ink)
+  } else {
+    first_rows <- seq_len(min(nrow(df), 5L))
+    y <- y - 0.03
+    y <- pdf_draw_table_rows(df, first_rows, y, theme)
+
+    if (nrow(df) > length(first_rows)) {
+      remaining <- seq.int(length(first_rows) + 1L, nrow(df))
+      page_groups <- split(remaining, ceiling(seq_along(remaining) / 10L))
+      for (page_rows in page_groups) {
+        pdf_new_page(theme)
+        graphics::text(0.07, 0.93, paste(title, "— продолжение таблицы"), adj = c(0, 1), cex = 1.05, font = 2, col = theme$ink)
+        graphics::segments(0.07, 0.895, 0.93, 0.895, col = theme$line, lwd = 1)
+        pdf_draw_table_rows(df, page_rows, 0.86, theme)
+      }
+    }
+  }
+
+  if (length(remaining_text) > 0L) {
+    text_groups <- split(remaining_text, ceiling(seq_along(remaining_text) / 16L))
+    for (group in text_groups) {
+      pdf_new_page(theme)
+      graphics::text(0.07, 0.93, paste(title, "— продолжение описания"), adj = c(0, 1), cex = 1.05, font = 2, col = theme$ink)
+      graphics::segments(0.07, 0.895, 0.93, 0.895, col = theme$line, lwd = 1)
+      yy <- 0.865
+      for (line in group) {
+        graphics::text(0.07, yy, line, adj = c(0, 1), cex = 0.77, col = theme$muted)
+        yy <- yy - 0.028
+      }
+    }
+  }
+
+  invisible(NULL)
+}
+
+pdf_draw_title_page <- function(report, record, theme_mode = "hell") {
+  theme <- pdf_theme(theme_mode)
+  pdf_new_page(theme)
+  is_heaven <- identical(theme_mode, "heaven")
+  world_title <- if (is_heaven) "ОТЧЕТ БОЖЕСТВЕННОГО\nМИРА" else "ОТЧЕТ ЗАГРОБНОГО\nМИРА"
+  oath <- if (is_heaven) {
+    "Свидетельство собрано под светом небесного суда: факты отделены от догадок, а следы цели сохранены в порядке."
+  } else {
+    "Свидетельство собрано у врат нижнего суда: факты отделены от догадок, а следы цели сохранены в порядке."
+  }
+  logo_file <- if (is_heaven) pdf_asset_path("githound-heaven-logo.png") else pdf_asset_path("githound-hell-logo.png")
+  pdf_draw_raster(logo_file, 0.36, 0.78, 0.64, 0.98)
+  graphics::text(0.5, 0.73, "GITHOUND", adj = c(0.5, 0.5), cex = 2.1, font = 2, col = if (is_heaven) "#d31d1d" else theme$ink)
+  graphics::text(0.5, 0.58, world_title, adj = c(0.5, 0.5), cex = 2.55, font = 2, col = theme$ink)
+  graphics::text(0.5, 0.42, paste("Цель:", report$profile %||% record$target %||% "—"), adj = c(0.5, 0.5), cex = 1.24, font = 2, col = theme$ink)
+  oath_lines <- strwrap(oath, width = 70)
+  y <- 0.35
+  for (line in oath_lines) {
+    graphics::text(0.5, y, line, adj = c(0.5, 0.5), cex = 0.94, col = theme$muted)
+    y <- y - 0.03
+  }
+  seal_y0 <- 0.065
+  seal_y1 <- 0.255
+  pdf_draw_raster(pdf_asset_path("seal-isis.png"), 0.11, seal_y0, 0.33, seal_y1)
+  pdf_draw_raster(pdf_asset_path("seal-set.png"), 0.39, seal_y0, 0.61, seal_y1)
+  pdf_draw_raster(pdf_asset_path("seal-anubis.png"), 0.67, seal_y0, 0.89, seal_y1)
+  graphics::text(0.22, 0.055, "Исида", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.50, 0.055, "Сет", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.78, 0.055, "Анубис", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+}
+
+pdf_draw_plot_page <- function(path, label, theme) {
+  pdf_new_page(theme)
+  graphics::text(0.07, 0.93, "Визуальный график", adj = c(0, 1), cex = 1.1, font = 2, col = theme$ink)
+  graphics::text(0.07, 0.885, label, adj = c(0, 1), cex = 0.8, col = theme$muted)
+  graphics::rect(0.07, 0.12, 0.93, 0.84, col = "#ffffff", border = theme$line, lwd = 1)
+  if (!pdf_draw_raster(path, 0.085, 0.135, 0.915, 0.825)) {
+    graphics::text(0.5, 0.5, "Не удалось встроить график в PDF.", adj = c(0.5, 0.5), cex = 0.9, col = theme$ink)
+  }
+}
+
+write_single_report_pdf <- function(record, file) {
+  report <- record$report
+  theme_mode <- report_theme_value(report, fallback = "hell")
+  theme <- pdf_theme(theme_mode)
+  grDevices::cairo_pdf(file, width = 8.27, height = 11.69, family = "Arial")
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  pdf_draw_title_page(report, record, theme_mode = theme_mode)
+
+  for (section in report$sections %||% list()) {
+    pdf_draw_section(section, theme = theme)
+  }
+
+  plot_paths <- report$plots %||% character()
+  plot_paths <- plot_paths[file.exists(plot_paths)]
+  if (length(plot_paths) > 0L) {
+    for (path in plot_paths) {
+      pdf_draw_plot_page(path, set_plot_label(path), theme = theme)
+    }
+  }
+
+  invisible(file)
+}
+
+safe_report_filename <- function(record) {
+  protocol <- tolower(record$protocol_type %||% record$report$protocol_type %||% "report")
+  target <- gsub("[^[:alnum:]_-]+", "_", record$target %||% "report")
+  target <- gsub("_+", "_", target)
+  target <- trimws(target, whitespace = "_")
+  if (!nzchar(target)) target <- "report"
+  paste0("githound_", protocol, "_", target, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+}
+
+write_reports_zip <- function(records, file) {
+  if (length(records) == 0L) {
+    stop("Не выбраны отчеты для скачивания.", call. = FALSE)
+  }
+  if (!requireNamespace("zip", quietly = TRUE)) {
+    zip_bin <- Sys.which("zip")
+    if (!nzchar(zip_bin)) {
+      stop("Для скачивания нескольких PDF нужен R-пакет zip или системная утилита zip.", call. = FALSE)
+    }
+  }
+
+  temp_dir <- tempfile("githound_pdf_")
+  dir.create(temp_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(temp_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  pdf_files <- vapply(seq_along(records), function(i) {
+    record <- records[[i]]
+    filename <- sub("\\.pdf$", paste0("_", i, ".pdf"), safe_report_filename(record))
+    path <- file.path(temp_dir, filename)
+    write_single_report_pdf(record, path)
+    path
+  }, character(1))
+
+  if (requireNamespace("zip", quietly = TRUE)) {
+    zip::zipr(zipfile = file, files = basename(pdf_files), root = temp_dir)
+  } else {
+    old <- setwd(temp_dir)
+    on.exit(setwd(old), add = TRUE)
+    utils::zip(zipfile = file, files = basename(pdf_files), flags = "-q")
+  }
+  invisible(file)
+}
+
+archive_table_ui <- function(records, page = 1L, page_size = 15L) {
+  if (!is.list(records) || length(records) == 0L) {
+    return(div(class = "set-empty", "Тот еще собирает свои свитки."))
+  }
+
+  total_pages <- max(1L, ceiling(length(records) / page_size))
+  page <- min(max(1L, as.integer(page)), total_pages)
+  start <- (page - 1L) * page_size + 1L
+  end <- min(length(records), start + page_size - 1L)
+  page_records <- records[start:end]
+
+  tagList(
+    div(
+      class = "archive-table-wrap",
+      tags$table(
+        class = "archive-table",
+        tags$thead(
+          tags$tr(
+            tags$th(class = "archive-check-cell", ""),
+            tags$th("Цель"),
+            tags$th("Протокол"),
+            tags$th("Статус"),
+            tags$th("Создан"),
+            tags$th("Хранится до"),
+            tags$th("Действие")
+          )
+        ),
+        tags$tbody(
+          lapply(page_records, function(item) {
+            tags$tr(
+              tags$td(class = "archive-check-cell", tags$input(type = "checkbox", class = "archive-row-select", value = item$id %||% "")),
+              tags$td(item$target %||% ""),
+              tags$td(item$protocol_label %||% archive_protocol_label(item$protocol_type %||% "")),
+              tags$td(archive_status_label(item$status %||% "active")),
+              tags$td(item$created_at_label %||% ""),
+              tags$td(item$expires_at_label %||% ""),
+              tags$td(tags$button(type = "button", class = "archive-open-btn", `data-id` = item$id %||% "", "Открыть"))
+            )
+          })
+        )
+      )
+    ),
+    div(
+      class = "archive-pager",
+      actionButton("archive_prev", "Назад", class = "menu-button secondary-button"),
+      span(class = "archive-page-label", paste("Страница", page, "из", total_pages)),
+      actionButton("archive_next", "Вперед", class = "menu-button secondary-button")
+    )
+  )
+}
+
+archive_screen <- function(records, page = 1L) {
   if (!is.list(records)) {
     records <- list()
   }
-
-  rows <- lapply(records, function(item) {
-    data.frame(
-      id = item$id %||% "",
-      target = item$target %||% "",
-      status = archive_status_label(item$status %||% "active"),
-      created_at = item$created_at_label %||% "",
-      expires_at = item$expires_at_label %||% "",
-      stringsAsFactors = FALSE
-    )
-  })
-  archive_df <- if (length(rows) > 0L) do.call(rbind, rows) else data.frame()
 
   div(
     class = "home archive-page",
@@ -468,17 +849,12 @@ archive_screen <- function(records) {
       class = "form archive-form",
       h2(class = "section-title", "Архив отчетов"),
       p(class = "account-copy", "Активные отчеты хранятся 7 дней. После этого они получают статус «заархивировано»."),
-      if (nrow(archive_df) == 0L) {
-        div(class = "set-empty", "Тот еще собирает свои свитки.")
-      } else {
-        tagList(
-          set_table_ui(archive_df[, c("target", "status", "created_at", "expires_at"), drop = FALSE]),
-          selectInput(
-            "archive_report_id",
-            "Отчет",
-            choices = stats::setNames(archive_df$id, paste(archive_df$target, archive_df$status, archive_df$created_at, sep = " · "))
-          ),
-          actionButton("open_archive_report", "Открыть отчет", class = "run-button")
+      archive_table_ui(records, page = page, page_size = 15L),
+      if (length(records) > 0L) {
+        div(
+          class = "archive-actions",
+          downloadButton("download_archive_reports", "Скачать выбранные", class = "menu-button secondary-button"),
+          actionButton("delete_archive_reports", "Удалить выбранные", class = "menu-button secondary-button")
         )
       },
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
@@ -502,6 +878,19 @@ ui <- fluidPage(
         }
       }
 
+      function setupLoginAutofill() {
+        var email = $('#login_email');
+        var password = $('#login_password');
+        if (email.length) {
+          email.attr('autocomplete', 'username');
+          email.attr('name', 'username');
+        }
+        if (password.length) {
+          password.attr('autocomplete', 'current-password');
+          password.attr('name', 'current-password');
+        }
+      }
+
       function setCookie(name, value, maxAgeSeconds) {
         document.cookie = name + '=' + encodeURIComponent(value) +
           '; max-age=' + maxAgeSeconds + '; path=/; SameSite=Lax';
@@ -519,81 +908,68 @@ ui <- fluidPage(
         return null;
       }
 
-      function getRememberedLogin() {
-        try {
-          var raw = window.localStorage.getItem('githound_login_memory') || getCookie('githound_login_memory');
-          if (!raw) return null;
-          var data = JSON.parse(raw);
-          if (!data.expiresAt || Date.now() > data.expiresAt) {
-            window.localStorage.removeItem('githound_login_memory');
-            setCookie('githound_login_memory', '', 0);
-            return null;
-          }
-          return data;
-        } catch (error) {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
-          return null;
-        }
+      function clearLegacyRememberedLogin() {
+        window.localStorage.removeItem('githound_login_memory');
+        setCookie('githound_login_memory', '', 0);
+      }
+
+      function pushRememberToken() {
+        if (!window.Shiny) return;
+        var token = getCookie('githound_remember_token');
+        Shiny.setInputValue('remember_token', token || '', {priority: 'event'});
       }
 
       function fillRememberedLogin() {
-        var data = getRememberedLogin();
-        if (!data) return;
-        setInputValueIfPresent('login_email', data.email || '');
-        setInputValueIfPresent('login_password', data.password || '');
-        if (window.Shiny) {
-          Shiny.setInputValue('login_email', data.email || '', {priority: 'event'});
-          Shiny.setInputValue('login_password', data.password || '', {priority: 'event'});
-        }
+        var token = getCookie('githound_remember_token');
         if ($('#remember_me').length) {
-          $('#remember_me').prop('checked', true).trigger('change');
+          var enabled = !!token;
+          $('#remember_me').prop('checked', enabled).trigger('change');
           if (window.Shiny) {
-            Shiny.setInputValue('remember_me', true, {priority: 'event'});
+            Shiny.setInputValue('remember_me', enabled, {priority: 'event'});
           }
         }
+        try {
+          var rememberedEmail = window.localStorage.getItem('githound_remember_email') || '';
+          if (rememberedEmail) {
+            setInputValueIfPresent('login_email', rememberedEmail);
+            if (window.Shiny) {
+              Shiny.setInputValue('login_email', rememberedEmail, {priority: 'event'});
+            }
+          }
+        } catch (error) {}
       }
 
       function storeRememberedLoginFromForm() {
-        var remember = $('#remember_me').is(':checked');
-        if (remember) {
-          var payload = JSON.stringify({
-            email: $('#login_email').val() || '',
-            password: $('#login_password').val() || '',
-            expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
-          });
-          window.localStorage.setItem('githound_login_memory', payload);
-          setCookie('githound_login_memory', payload, 14 * 24 * 60 * 60);
-        } else {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
-        }
+        return $('#remember_me').is(':checked');
       }
 
       $(document).ready(function() {
+        clearLegacyRememberedLogin();
         fillRememberedLogin();
+        setupLoginAutofill();
+        setTimeout(pushRememberToken, 0);
         if (window.Shiny) {
           Shiny.setInputValue('theme_mode', document.body.classList.contains('heaven-theme') ? 'heaven' : 'hell', {priority: 'event'});
         }
         var observer = new MutationObserver(function() {
           fillRememberedLogin();
+          setupLoginAutofill();
+          restoreArchiveSelection();
         });
         observer.observe(document.body, { childList: true, subtree: true });
       });
 
-      Shiny.addCustomMessageHandler('rememberLogin', function(data) {
-        if (data.remember) {
-          var payload = JSON.stringify({
-            email: data.email || '',
-            password: data.password || '',
-            expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
-          });
-          window.localStorage.setItem('githound_login_memory', payload);
-          setCookie('githound_login_memory', payload, 14 * 24 * 60 * 60);
+      Shiny.addCustomMessageHandler('rememberToken', function(data) {
+        if (data && data.token) {
+          setCookie('githound_remember_token', data.token, data.maxAgeSeconds || (30 * 24 * 60 * 60));
+          if (data.email) {
+            window.localStorage.setItem('githound_remember_email', data.email);
+          }
         } else {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
+          setCookie('githound_remember_token', '', 0);
+          window.localStorage.removeItem('githound_remember_email');
         }
+        fillRememberedLogin();
       });
 
       Shiny.addCustomMessageHandler('setSetProgress', function(data) {
@@ -615,7 +991,9 @@ ui <- fluidPage(
       });
 
       $(document).on('click', '#submit_login', function() {
-        storeRememberedLoginFromForm();
+        if (window.Shiny) {
+          Shiny.setInputValue('remember_me', storeRememberedLoginFromForm(), {priority: 'event'});
+        }
       });
 
       $(document).on('click', '#theme_heaven', function() {
@@ -624,6 +1002,51 @@ ui <- fluidPage(
         $('#theme_hell').removeClass('active').attr('aria-pressed', 'false');
         if (window.Shiny) {
           Shiny.setInputValue('theme_mode', 'heaven', {priority: 'event'});
+        }
+      });
+
+      function publishArchiveSelection() {
+        if (!window.Shiny) return;
+        window.githoundArchiveSelected = window.githoundArchiveSelected || {};
+        $('.archive-row-select').each(function() {
+          if (this.checked) {
+            window.githoundArchiveSelected[this.value] = true;
+          } else {
+            delete window.githoundArchiveSelected[this.value];
+          }
+        });
+        Shiny.setInputValue('archive_selected_ids', Object.keys(window.githoundArchiveSelected), {priority: 'event'});
+      }
+
+      function restoreArchiveSelection() {
+        window.githoundArchiveSelected = window.githoundArchiveSelected || {};
+        $('.archive-row-select').each(function() {
+          this.checked = !!window.githoundArchiveSelected[this.value];
+        });
+      }
+
+      $(document).on('change', '.archive-row-select', publishArchiveSelection);
+
+      $(document).on('click', '.archive-open-btn', function() {
+        if (window.Shiny) {
+          Shiny.setInputValue('archive_open_id', $(this).data('id'), {priority: 'event'});
+        }
+      });
+
+      $(document).on('click', '.set-plot-button', function() {
+        if (window.Shiny) {
+          Shiny.setInputValue('plot_modal', {
+            src: $(this).data('src'),
+            label: $(this).data('label')
+          }, {priority: 'event'});
+        }
+      });
+
+      Shiny.addCustomMessageHandler('clearArchiveSelection', function() {
+        window.githoundArchiveSelected = {};
+        restoreArchiveSelection();
+        if (window.Shiny) {
+          Shiny.setInputValue('archive_selected_ids', [], {priority: 'event'});
         }
       });
     ")),
@@ -1108,6 +1531,119 @@ ui <- fluidPage(
         text-align: left;
       }
 
+      .archive-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .archive-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(8, 1, 2, 0.55);
+      }
+
+      body.heaven-theme .archive-table-wrap {
+        border-color: rgba(125, 203, 235, 0.72);
+        background: rgba(255, 255, 255, 0.86);
+        box-shadow: 0 18px 36px rgba(120, 154, 174, 0.14);
+      }
+
+      .archive-table {
+        width: 100%;
+        min-width: 780px;
+        border-collapse: collapse;
+        color: var(--ink);
+        table-layout: fixed;
+      }
+
+      .archive-table th,
+      .archive-table td {
+        padding: 12px 10px;
+        border-bottom: 1px solid rgba(224, 24, 36, 0.58);
+        border-right: 1px solid rgba(224, 24, 36, 0.42);
+        text-align: left;
+        vertical-align: middle;
+        overflow-wrap: anywhere;
+      }
+
+      body.heaven-theme .archive-table th,
+      body.heaven-theme .archive-table td {
+        border-bottom-color: rgba(125, 203, 235, 0.52);
+        border-right-color: rgba(125, 203, 235, 0.42);
+        background: rgba(246, 251, 255, 0.86);
+        color: #1f3545;
+      }
+
+      .archive-table tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .archive-table th {
+        color: var(--accent-hover);
+        font-size: 14px;
+        letter-spacing: 0;
+      }
+
+      body.heaven-theme .archive-table th {
+        background: linear-gradient(180deg, rgba(255, 245, 200, 0.95), rgba(235, 248, 255, 0.95));
+        color: #b88408;
+      }
+
+      .archive-check-cell {
+        width: 48px;
+        text-align: center !important;
+      }
+
+      .archive-row-select {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+
+      .archive-open-btn {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--secondary-bg);
+        color: var(--secondary-ink);
+        font-weight: 800;
+      }
+
+      .archive-open-btn:hover {
+        border-color: var(--accent-hover);
+        color: var(--accent-hover);
+      }
+
+      body.heaven-theme .archive-open-btn {
+        border-color: rgba(125, 203, 235, 0.88);
+        background: rgba(237, 249, 255, 0.98);
+        color: #1d6283;
+        box-shadow: 4px 4px 0 rgba(120, 154, 174, 0.24);
+      }
+
+      body.heaven-theme .archive-open-btn:hover {
+        border-color: #d1a036;
+        color: #b88408;
+      }
+
+      .archive-pager {
+        display: grid;
+        grid-template-columns: minmax(0, 130px) 1fr minmax(0, 130px);
+        align-items: center;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .archive-page-label {
+        color: var(--muted);
+        font-weight: 800;
+        text-align: center;
+      }
+
       .set-progress-wrap {
         display: grid;
         gap: 10px;
@@ -1454,7 +1990,7 @@ ui <- fluidPage(
         min-width: 640px;
         border-collapse: collapse;
         table-layout: fixed;
-        font-size: 13px;
+        font-size: 14px;
       }
 
       .set-report-table th,
@@ -1487,6 +2023,16 @@ ui <- fluidPage(
         gap: 8px;
       }
 
+      .set-plot-button {
+        display: block;
+        padding: 0;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        overflow: hidden;
+        cursor: pointer;
+      }
+
       .set-plot-image {
         width: 100%;
         border: 1px solid var(--line);
@@ -1494,7 +2040,15 @@ ui <- fluidPage(
         background: rgba(255, 255, 255, 0.92);
         box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
         transition: border-color var(--theme-duration) var(--theme-ease),
-          box-shadow var(--theme-duration) var(--theme-ease);
+          box-shadow var(--theme-duration) var(--theme-ease),
+          transform 180ms var(--theme-ease);
+      }
+
+      .set-plot-button:hover .set-plot-image,
+      .set-plot-button:focus .set-plot-image {
+        transform: scale(1.02);
+        box-shadow: 0 0 0 2px rgba(255, 43, 52, 0.2),
+          0 14px 34px rgba(0, 0, 0, 0.24);
       }
 
       .set-plot-caption {
@@ -1502,6 +2056,14 @@ ui <- fluidPage(
         font-size: 13px;
         font-weight: 800;
         transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .plot-modal-image {
+        width: 100%;
+        height: auto;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.98);
       }
 
       .account-portrait {
@@ -1765,6 +2327,66 @@ ui <- fluidPage(
         color: var(--accent);
       }
 
+      .logout-modal {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 14px;
+        align-items: center;
+      }
+
+      .logout-modal-avatar {
+        width: 64px;
+        height: auto;
+        filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
+      }
+
+      .logout-modal-copy {
+        display: grid;
+        gap: 6px;
+      }
+
+      .logout-modal-title {
+        color: var(--ink);
+        font-size: 20px;
+        font-weight: 900;
+      }
+
+      .logout-modal-text {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.4;
+      }
+
+      .modal-content {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--ink);
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.42);
+      }
+
+      .modal-header,
+      .modal-footer {
+        border-color: rgba(224, 24, 36, 0.22);
+      }
+
+      .modal-body {
+        color: var(--ink);
+      }
+
+      .logout-modal-footer {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        width: 100%;
+      }
+
+      .logout-modal-footer .run-button,
+      .logout-modal-footer .secondary-button {
+        min-height: 48px;
+        margin: 0;
+      }
+
       .run-button,
       .primary-button {
         background: var(--accent);
@@ -1880,6 +2502,10 @@ ui <- fluidPage(
           margin-top: 16px;
           margin-left: auto;
           opacity: 0.18;
+        }
+
+        .archive-actions {
+          grid-template-columns: 1fr;
         }
 
         .divine-seals {
@@ -2038,12 +2664,16 @@ server <- function(input, output, session) {
     })
   }
 
-  current_page <- reactiveVal("landing")
+  current_page <- reactiveVal("boot")
   avatars_open <- reactiveVal(FALSE)
   analysis_target <- reactiveVal(NULL)
   theme_mode <- reactiveVal("hell")
   set_report <- reactiveVal(NULL)
   report_archive <- reactiveVal(list())
+  archive_page <- reactiveVal(1L)
+  remember_token <- reactiveVal(NULL)
+  remember_attempted <- reactiveVal(FALSE)
+  remember_input_seen <- reactiveVal(FALSE)
   set_progress <- reactiveValues(value = 0, label = "Ожидание запуска")
   account <- reactiveValues(
     email = NULL,
@@ -2051,6 +2681,119 @@ server <- function(input, output, session) {
     avatar_id = "egypt_1",
     github_token = ""
   )
+
+  launch_protocol <- function(protocol_type, target = trimws(analysis_target() %||% "")) {
+    target <- trimws(target %||% "")
+    protocol_type <- tolower(protocol_type %||% "")
+
+    if (!nzchar(target)) {
+      notify_user("Не указана цель.", type = "error", duration = 6)
+      current_page("analysis")
+      return(invisible(FALSE))
+    }
+
+    if (identical(protocol_type, "set")) {
+      token <- trimws(account$github_token %||% "")
+      if (!nzchar(token)) {
+        notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
+        current_page("account")
+        return(invisible(FALSE))
+      }
+    }
+
+    analysis_target(target)
+    set_report(NULL)
+    launch_theme <- theme_mode()
+    load_user_archive()
+    archive_same_target(target)
+    current_page("set_loading")
+
+    if (identical(protocol_type, "isis")) {
+      set_progress$value <- 0
+      set_progress$label <- "Запуск протокола Исиды"
+      try(session$flushReact(), silent = TRUE)
+      session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
+      progress_label <- "Запуск протокола Исиды"
+
+      run_job <- function() {
+        tryCatch({
+          result <- run_isis_protocol(
+            profile = target,
+            conn = conn,
+            progress = function(value, label = NULL) {
+              set_progress$value <- value
+              if (!is.null(label) && nzchar(label)) {
+                progress_label <<- label
+                set_progress$label <- label
+              }
+              session$sendCustomMessage("setSetProgress", list(value = value, label = progress_label))
+              try(session$flushReact(), silent = TRUE)
+            }
+          )
+
+          report <- result$report
+          report$theme <- launch_theme
+          report$view_theme <- launch_theme
+          set_report(report)
+          add_report_to_archive(report, target)
+          current_page("set_report")
+        }, error = function(e) {
+          set_progress$value <- 0
+          set_progress$label <- "Протокол остановлен"
+          session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
+          notify_user(conditionMessage(e), type = "error", duration = 10)
+          current_page("protocol")
+        })
+      }
+    } else {
+      token <- trimws(account$github_token %||% "")
+      set_progress$value <- 0
+      set_progress$label <- "Запуск протокола Сет"
+      try(session$flushReact(), silent = TRUE)
+      session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Сет"))
+      progress_label <- "Запуск протокола Сет"
+
+      run_job <- function() {
+        tryCatch({
+          result <- run_set_protocol(
+            profile = target,
+            token = token,
+            conn = conn,
+            progress = function(value, label = NULL) {
+              set_progress$value <- value
+              if (!is.null(label) && nzchar(label)) {
+                progress_label <<- label
+                set_progress$label <- label
+              }
+              session$sendCustomMessage("setSetProgress", list(value = value, label = progress_label))
+              try(session$flushReact(), silent = TRUE)
+            }
+          )
+
+          report <- result$report
+          report$theme <- launch_theme
+          report$view_theme <- launch_theme
+          set_report(report)
+          add_report_to_archive(report, target)
+          current_page("set_report")
+        }, error = function(e) {
+          set_progress$value <- 0
+          set_progress$label <- "Протокол остановлен"
+          session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
+          notify_user(conditionMessage(e), type = "error", duration = 10)
+          current_page("protocol")
+        })
+      }
+    }
+
+    if (requireNamespace("later", quietly = TRUE)) {
+      later::later(run_job, delay = 0.2)
+    } else {
+      run_job()
+    }
+
+    invisible(TRUE)
+  }
 
   ensure_report_archive_table <- function() {
     sql <- paste0(
@@ -2091,16 +2834,20 @@ server <- function(input, output, session) {
   archive_row_to_item <- function(row) {
     created_at <- as.POSIXct(row$created_at[[1]], tz = "UTC")
     expires_at <- as.POSIXct(row$expires_at[[1]], tz = "UTC")
+    report <- blob_to_report(row$report_blob[[1]])
     list(
       id = row$report_id[[1]],
       target = row$target[[1]],
+      protocol_type = report$protocol_type %||% "set",
       status = row$status[[1]],
       created_at = created_at,
       expires_at = expires_at,
       created_at_label = archive_time_label(created_at),
       expires_at_label = archive_time_label(expires_at),
       archived_at = if (nzchar(row$archived_at[[1]])) as.POSIXct(row$archived_at[[1]], tz = "UTC") else NULL,
-      report = blob_to_report(row$report_blob[[1]])
+      theme = report_theme_value(report, fallback = "hell"),
+      protocol_label = report$protocol_label %||% archive_protocol_label(report$protocol_type %||% "set"),
+      report = report
     )
   }
 
@@ -2126,27 +2873,7 @@ server <- function(input, output, session) {
   }
 
   persist_archive_status <- function(item, email = isolate(account$email)) {
-    if (!nzchar(email %||% "")) {
-      return(invisible(FALSE))
-    }
-    ensure_report_archive_table()
-    archived_at <- if (is.null(item$archived_at)) "" else archive_time_label(item$archived_at)
-    sql <- paste0(
-      "ALTER TABLE ",
-      quote_table_ident("githound_report_archive", conn$dbname),
-      " UPDATE status = ",
-      githound_sql_string(item$status),
-      ", archived_at = ",
-      githound_sql_string(archived_at),
-      ", version = ",
-      as.integer(as.numeric(Sys.time())),
-      " WHERE lower(email) = ",
-      githound_sql_string(normalize_githound_email(email)),
-      " AND report_id = ",
-      githound_sql_string(item$id)
-    )
-    clickhouse_request(conn, sql, parse_json = FALSE)
-    invisible(TRUE)
+    save_archive_item(item, email = email)
   }
 
   load_user_archive <- function(email = isolate(account$email)) {
@@ -2160,6 +2887,7 @@ server <- function(input, output, session) {
       quote_table_ident("githound_report_archive", conn$dbname),
       " FINAL WHERE lower(email) = ",
       githound_sql_string(normalize_githound_email(email)),
+      " AND status != 'deleted'",
       " ORDER BY created_at DESC"
     )
     rows <- query_clickhouse(conn, sql)
@@ -2188,17 +2916,27 @@ server <- function(input, output, session) {
 
   archive_same_target <- function(target) {
     records <- refresh_archive_status()
-    changed <- FALSE
-    updated <- lapply(records, function(item) {
-      if (identical(item$status %||% "active", "active") &&
-          identical(tolower(item$target %||% ""), tolower(target %||% ""))) {
-        item$status <- "archived"
-        item$archived_at <- Sys.time()
-        try(persist_archive_status(item), silent = TRUE)
-        changed <<- TRUE
-      }
-      item
-    })
+    normalized_target <- tolower(trimws(target %||% ""))
+    matching_idx <- which(vapply(records, function(item) {
+      identical(item$status %||% "active", "active") &&
+        identical(tolower(trimws(item$target %||% "")), normalized_target)
+    }, logical(1)))
+
+    if (length(matching_idx) == 0L) {
+      return(invisible(records))
+    }
+
+    created_times <- vapply(records[matching_idx], function(item) {
+      as.numeric(item$created_at %||% Sys.time())
+    }, numeric(1))
+    oldest_idx <- matching_idx[[which.min(created_times)]]
+
+    updated <- records
+    updated[[oldest_idx]]$status <- "archived"
+    updated[[oldest_idx]]$archived_at <- Sys.time()
+    try(persist_archive_status(updated[[oldest_idx]]), silent = TRUE)
+
+    changed <- TRUE
     if (isTRUE(changed)) {
       report_archive(updated)
     }
@@ -2206,12 +2944,18 @@ server <- function(input, output, session) {
   }
 
   add_report_to_archive <- function(report, target) {
-    records <- refresh_archive_status()
+    report$theme <- report_theme_value(report, fallback = theme_mode())
+    report$protocol_type <- tolower(report$protocol_type %||% "set")
+    report$protocol_label <- report$protocol_label %||% archive_protocol_label(report$protocol_type)
+    records <- archive_same_target(target)
     created_at <- Sys.time()
     expires_at <- created_at + 7 * 24 * 60 * 60
     item <- list(
       id = paste0(format(created_at, "%Y%m%d%H%M%S"), "-", sample(1000:9999, 1)),
       target = target,
+      protocol_type = report$protocol_type,
+      protocol_label = report$protocol_label,
+      theme = report$theme,
       status = "active",
       created_at = created_at,
       expires_at = expires_at,
@@ -2251,20 +2995,146 @@ server <- function(input, output, session) {
 
   observeEvent(input$open_archive, {
     load_user_archive()
+    archive_page(1L)
     current_page("archive")
   })
 
-  observeEvent(input$open_archive_report, {
-    req(input$archive_report_id)
+  observeEvent(input$logout_request, {
+    showModal(modalDialog(
+      easyClose = TRUE,
+      title = NULL,
+      footer = div(
+        class = "logout-modal-footer",
+        actionButton("logout_cancel", "Нет", class = "menu-button secondary-button"),
+        actionButton("logout_confirm", "Да", class = "run-button")
+      ),
+      div(
+        class = "logout-modal",
+        img(src = "mini-thoth.svg", class = "logout-modal-avatar", alt = "Мини-Тот"),
+        div(
+          class = "logout-modal-copy",
+          div(class = "logout-modal-title", "Мини-Тот"),
+          div(class = "logout-modal-text", "Вы уверены, что хотите выйти из аккаунта?")
+        )
+      )
+    ))
+  })
+
+  observeEvent(input$logout_cancel, {
+    removeModal()
+  })
+
+  observeEvent(input$logout_confirm, {
+    if (nzchar(remember_token() %||% "")) {
+      try(revoke_githound_remember_tokens(conn, token = remember_token()), silent = TRUE)
+    }
+    session$sendCustomMessage("rememberToken", list(token = ""))
+    removeModal()
+    account$email <- NULL
+    account$nickname <- NULL
+    account$avatar_id <- "egypt_1"
+    account$github_token <- ""
+    remember_token(NULL)
+    remember_attempted(TRUE)
+    report_archive(list())
+    archive_page(1L)
+    analysis_target(NULL)
+    set_report(NULL)
+    avatars_open(FALSE)
+    current_page("landing")
+    notify_user("Вы вышли из аккаунта.", type = "message", duration = 5)
+  })
+
+  observeEvent(input$archive_prev, {
+    archive_page(max(1L, archive_page() - 1L))
+  })
+
+  observeEvent(input$archive_next, {
     records <- refresh_archive_status()
-    match <- Filter(function(item) identical(item$id, input$archive_report_id), records)
+    max_page <- max(1L, ceiling(length(records) / 15L))
+    archive_page(min(max_page, archive_page() + 1L))
+  })
+
+  observeEvent(input$archive_open_id, {
+    req(input$archive_open_id)
+    records <- refresh_archive_status()
+    match <- Filter(function(item) identical(item$id, input$archive_open_id), records)
     if (length(match) == 0L) {
       notify_user("Отчет не найден в архиве.", type = "error", duration = 6)
       return()
     }
-    set_report(match[[1]]$report)
+    report <- match[[1]]$report
+    if (!is.list(report)) {
+      notify_user("Структура отчета повреждена и не может быть открыта.", type = "error", duration = 7)
+      return()
+    }
+    report$theme <- match[[1]]$theme %||% report_theme_value(report, fallback = "hell")
+    report$view_theme <- theme_mode()
+    set_report(NULL)
+    set_report(report)
     current_page("set_report")
   })
+
+  observeEvent(input$plot_modal, {
+    req(is.list(input$plot_modal), input$plot_modal$src)
+    showModal(modalDialog(
+      title = input$plot_modal$label %||% "График",
+      easyClose = TRUE,
+      size = "l",
+      footer = modalButton("Закрыть"),
+      img(src = input$plot_modal$src, class = "plot-modal-image", alt = input$plot_modal$label %||% "График")
+    ))
+  })
+
+  observeEvent(input$delete_archive_reports, {
+    selected <- input$archive_selected_ids %||% character()
+    if (length(selected) == 0L) {
+      notify_user("Выберите отчеты для удаления.", type = "error", duration = 5)
+      return()
+    }
+    records <- refresh_archive_status()
+    now <- Sys.time()
+    updated <- lapply(records, function(item) {
+      if (item$id %in% selected) {
+        item$status <- "deleted"
+        item$archived_at <- now
+        try(persist_archive_status(item), silent = TRUE)
+      }
+      item
+    })
+    visible_records <- Filter(function(item) !identical(item$status, "deleted"), updated)
+    report_archive(visible_records)
+    archive_page(min(archive_page(), max(1L, ceiling(length(visible_records) / 15L))))
+    session$sendCustomMessage("clearArchiveSelection", list())
+    notify_user("Выбранные отчеты удалены.", type = "message", duration = 5)
+  })
+
+  output$download_archive_reports <- downloadHandler(
+    filename = function() {
+      selected <- isolate(input$archive_selected_ids %||% character())
+      records <- isolate(refresh_archive_status())
+      chosen <- Filter(function(item) item$id %in% selected, records)
+      if (length(chosen) == 1L) {
+        safe_report_filename(chosen[[1]])
+      } else {
+        paste0("githound_reports_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".zip")
+      }
+    },
+    content = function(file) {
+      selected <- isolate(input$archive_selected_ids %||% character())
+      if (length(selected) == 0L) {
+        stop("Выберите отчеты для скачивания.", call. = FALSE)
+      }
+      records <- refresh_archive_status()
+      chosen <- Filter(function(item) item$id %in% selected, records)
+      if (length(chosen) == 1L) {
+        write_single_report_pdf(chosen[[1]], file)
+      } else {
+        write_reports_zip(chosen, file)
+      }
+    },
+    contentType = "application/octet-stream"
+  )
 
   observeEvent(input$toggle_avatars, {
     avatars_open(!isTRUE(avatars_open()))
@@ -2311,19 +3181,79 @@ server <- function(input, output, session) {
       account$avatar_id <- logged_in$avatar_id[[1]]
       account$github_token <- logged_in$github_token[[1]] %||% ""
       load_user_archive()
-      session$sendCustomMessage(
-        "rememberLogin",
-        list(
-          remember = isTRUE(input$remember_me),
-          email = input$login_email %||% "",
-          password = input$login_password %||% ""
-        )
-      )
+      if (isTRUE(input$remember_me)) {
+        token_info <- issue_githound_remember_token(conn, logged_in$email[[1]], days = 30L)
+        remember_token(token_info$token)
+        session$sendCustomMessage("rememberToken", list(
+          token = token_info$token,
+          email = logged_in$email[[1]],
+          maxAgeSeconds = 30L * 24L * 60L * 60L
+        ))
+      } else {
+        if (nzchar(remember_token() %||% "")) {
+          try(revoke_githound_remember_tokens(conn, token = remember_token()), silent = TRUE)
+        }
+        remember_token(NULL)
+        session$sendCustomMessage("rememberToken", list(token = ""))
+      }
+      remember_attempted(TRUE)
       current_page("analysis")
       notify_user("Вход выполнен.", type = "message")
     }, error = function(e) {
       notify_user(conditionMessage(e), type = "error", duration = 7)
     })
+  })
+
+  observeEvent(input$remember_token, {
+    if (!isTRUE(remember_input_seen())) {
+      remember_input_seen(TRUE)
+    }
+    token <- trimws(input$remember_token %||% "")
+    if (nzchar(account$email %||% "")) {
+      if (nzchar(token)) remember_token(token)
+      return()
+    }
+    if (isTRUE(remember_attempted()) && !identical(current_page(), "boot")) {
+      if (nzchar(token)) remember_token(token) else remember_token(NULL)
+      return()
+    }
+    if (!nzchar(token)) {
+      remember_token(NULL)
+      remember_attempted(TRUE)
+      if (identical(current_page(), "boot")) {
+        current_page("landing")
+      }
+      return()
+    }
+    remember_attempted(TRUE)
+
+    tryCatch({
+      remembered <- login_githound_account_by_remember_token(conn, token)
+      account$email <- remembered$email[[1]]
+      account$nickname <- remembered$nickname[[1]]
+      account$avatar_id <- remembered$avatar_id[[1]]
+      account$github_token <- remembered$github_token[[1]] %||% ""
+      remember_token(token)
+      load_user_archive()
+      current_page("analysis")
+    }, error = function(e) {
+      remember_token(NULL)
+      session$sendCustomMessage("rememberToken", list(token = ""))
+      if (identical(current_page(), "boot")) {
+        current_page("landing")
+      }
+    })
+  }, ignoreInit = FALSE)
+
+  observe({
+    if (!identical(current_page(), "boot")) {
+      return()
+    }
+    invalidateLater(1800, session)
+    if (isTRUE(remember_input_seen()) || isTRUE(remember_attempted()) || nzchar(account$email %||% "")) {
+      return()
+    }
+    current_page("landing")
   })
 
   observeEvent(input$avatar_id, {
@@ -2343,128 +3273,21 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$run_isis, {
-    target <- trimws(analysis_target() %||% "")
-
-    if (!nzchar(target)) {
-      notify_user("Не указана цель.", type = "error", duration = 6)
-      current_page("analysis")
-      return()
-    }
-
-    set_report(NULL)
-    set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Исиды"
-    launch_theme <- theme_mode()
-    archive_same_target(target)
-    current_page("set_loading")
-    try(session$flushReact(), silent = TRUE)
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
-
-    progress_label <- "Запуск протокола Исиды"
-    run_isis_job <- function() {
-      tryCatch({
-        result <- run_isis_protocol(
-          profile = target,
-          conn = conn,
-          progress = function(value, label = NULL) {
-            set_progress$value <- value
-            if (!is.null(label) && nzchar(label)) {
-              progress_label <<- label
-    set_progress$label <- "Запуск протокола Исиды"
-            }
-            session$sendCustomMessage(
-              "setSetProgress",
-              list(value = value, label = progress_label)
-            )
-            try(session$flushReact(), silent = TRUE)
-          }
-        )
-
-        report <- result$report
-        report$theme <- launch_theme
-        set_report(report)
-        add_report_to_archive(report, target)
-        current_page("set_report")
-      }, error = function(e) {
-        set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Исиды"
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
-        notify_user(conditionMessage(e), type = "error", duration = 10)
-        current_page("protocol")
-      })
-    }
-
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_isis_job, delay = 0.2)
-    } else {
-      run_isis_job()
-    }
+    launch_protocol("isis")
   })
 
   observeEvent(input$run_set, {
-    target <- trimws(analysis_target() %||% "")
-    token <- trimws(account$github_token %||% "")
+    launch_protocol("set")
+  })
 
-    if (!nzchar(target)) {
-      notify_user("Не указана цель.", type = "error", duration = 6)
-      current_page("analysis")
-      return()
-    }
-    if (!nzchar(token)) {
-      notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
-      current_page("account")
-      return()
-    }
+  observeEvent(input$run_isis_after_report, {
+    req(is.list(set_report()))
+    launch_protocol("isis", target = set_report()$profile %||% analysis_target())
+  })
 
-    set_report(NULL)
-    set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Сет"
-    launch_theme <- theme_mode()
-    archive_same_target(target)
-    current_page("set_loading")
-    try(session$flushReact(), silent = TRUE)
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Сет"))
-
-    progress_label <- "Запуск протокола Сет"
-    run_set_job <- function() {
-      tryCatch({
-        result <- run_set_protocol(
-          profile = target,
-          token = token,
-          conn = conn,
-          progress = function(value, label = NULL) {
-            set_progress$value <- value
-            if (!is.null(label) && nzchar(label)) {
-              progress_label <<- label
-              set_progress$label <- label
-            }
-            session$sendCustomMessage(
-              "setSetProgress",
-              list(value = value, label = progress_label)
-            )
-            try(session$flushReact(), silent = TRUE)
-          }
-        )
-
-        report <- result$report
-        report$theme <- launch_theme
-        set_report(report)
-        add_report_to_archive(report, target)
-        current_page("set_report")
-      }, error = function(e) {
-        set_progress$value <- 0
-        set_progress$label <- "Протокол остановлен"
-        session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
-        notify_user(conditionMessage(e), type = "error", duration = 10)
-        current_page("protocol")
-      })
-    }
-
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_set_job, delay = 0.2)
-    } else {
-      run_set_job()
-    }
+  observeEvent(input$run_set_after_report, {
+    req(is.list(set_report()))
+    launch_protocol("set", target = set_report()$profile %||% analysis_target())
   })
 
   observeEvent(input$save_account, {
@@ -2536,15 +3359,18 @@ server <- function(input, output, session) {
       class = "account-menu",
       div(class = "account-menu-trigger", "Меню"),
       div(
-        class = "account-menu-panel",
-        actionButton("open_account", "Личный кабинет", class = "menu-button secondary-button"),
-        actionButton("open_archive", "Архив", class = "menu-button secondary-button")
-      )
+      class = "account-menu-panel",
+      actionButton("open_account", "Личный кабинет", class = "menu-button secondary-button"),
+      actionButton("open_archive", "Архив", class = "menu-button secondary-button"),
+      actionButton("logout_request", "Выход", class = "menu-button secondary-button")
     )
-  })
+  )
+})
 
   output$page <- renderUI({
-    if (identical(current_page(), "registration")) {
+    if (identical(current_page(), "boot")) {
+      boot_screen()
+    } else if (identical(current_page(), "registration")) {
       registration_screen()
     } else if (identical(current_page(), "login")) {
       login_screen()
@@ -2561,9 +3387,16 @@ server <- function(input, output, session) {
     } else if (identical(current_page(), "set_loading")) {
       set_loading_screen(analysis_target() %||% "")
     } else if (identical(current_page(), "set_report")) {
-      set_report_screen(set_report())
+      report <- set_report()
+      if (is.list(report)) {
+        report$view_theme <- theme_mode()
+      }
+      set_report_screen(report)
     } else if (identical(current_page(), "archive")) {
-      archive_screen(report_archive())
+      records <- report_archive()
+      max_page <- max(1L, ceiling(length(records) / 15L))
+      page <- min(max(1L, archive_page()), max_page)
+      archive_screen(records, page = page)
     } else {
       landing_screen()
     }
