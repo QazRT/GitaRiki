@@ -329,6 +329,25 @@ set_collect_plot_paths <- function(analysis) {
   unique(candidates)
 }
 
+set_clickhouse_tables_by_mask <- function(conn, mask = "github_*") {
+  tables <- query_clickhouse(
+    conn,
+    paste(
+      "SELECT name",
+      "FROM system.tables",
+      "WHERE database = currentDatabase()",
+      "ORDER BY name"
+    )
+  )
+  if (!is.data.frame(tables) || !"name" %in% names(tables) || nrow(tables) == 0L) {
+    return(character())
+  }
+
+  names <- as.character(tables$name)
+  names <- names[!is.na(names) & nzchar(names)]
+  names[grepl(utils::glob2rx(mask), names)]
+}
+
 set_plot_label <- function(path) {
   name <- basename(path)
   labels <- c(
@@ -405,8 +424,8 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Первые найденные совпадения по пакетам и версиям. Подробные описания укорочены для читаемости.",
       table = set_prepare_table(
         scan$vulnerabilities,
-        c("repository", "sha", "component_name", "component_version", "matched_ecosystem", "osv_id", "summary", "affected"),
-        c("Репозиторий", "Коммит", "Пакет", "Экосистема", "Версия", "OSV ID", "Описание", "Критичность"),
+        c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "summary"),
+        c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "Описание"),
         limit = 100L,
         max_chars = 75L
       )
@@ -433,6 +452,9 @@ set_vulnerability_sections <- function(vulnerability_scan) {
         "Никнейм пользователя", "Появилась в коммите", "Дата появления",
         "Кто исправил", "Исправлена в коммите", "Дата исправления"
       )
+      introduced_commits <- lifecycle_table[[5L]]
+      lifecycle_table <- lifecycle_table[, -c(5L, 8L), drop = FALSE]
+      attr(lifecycle_table, "copy_commit_at_date") <- list(date_col = 5L, commits = introduced_commits)
       sections[[length(sections)]]$table <- lifecycle_table
     }
   }
@@ -662,7 +684,16 @@ run_isis_protocol <- function(profile,
     stop("mcp_chat_with_clickhouse() is not loaded.", call. = FALSE)
   }
 
-  progress(15, "Подготовка запроса ИСИДЫ")
+  progress(0, "Подготовка запроса ИСИДЫ")
+  isis_table_mask <- "github_*"
+  allowed_tables <- set_clickhouse_tables_by_mask(conn, mask = isis_table_mask)
+  if (length(allowed_tables) == 0L) {
+    stop(
+      paste0("ClickHouse tables not found by mask ", isis_table_mask, "."),
+      call. = FALSE
+    )
+  }
+
   result <- mcp_chat_with_clickhouse(
     question = paste(
       "Посмотри всю информацию по пользователю",
@@ -670,9 +701,10 @@ run_isis_protocol <- function(profile,
       "и сделай психологический портрет пользователя с описанием его привычек, характера работы, отношения к безопасности разрабатываемых продуктов и общего психологического портрета"
     ),
     conn = conn,
-    allowed_tables = NULL,
+    allowed_tables = allowed_tables,
     max_rows = 5000,
     max_tool_rounds = 20,
+    progressbar = progress,
     verbose_tools = TRUE
   )
 

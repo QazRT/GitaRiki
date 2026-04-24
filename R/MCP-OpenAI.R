@@ -444,6 +444,7 @@ mcp_openai_chat <- function(
     max_tool_rounds = 4,
     timeout = 120,
     extra_body = list(),
+    progressbar = function(value, label = NULL) NULL,
     verbose_tools = FALSE
 ) {
   .mcp_assert_scalar_character(model, "model")
@@ -509,7 +510,7 @@ mcp_openai_chat <- function(
     if (round_idx > max_tool_rounds) {
       stop("Tool-call loop exceeded `max_tool_rounds`.", call. = FALSE)
     }
-
+    progressbar(round_idx * 100 / max_tool_rounds, "Общение с ИСИДОЙ")
     for (tool_call in assistant_message$tool_calls) {
       arguments <- .mcp_tool_arguments(tool_call[["function"]]$arguments)
       if (isTRUE(verbose_tools)) {
@@ -799,6 +800,7 @@ mcp_chat_with_clickhouse <- function(
     allowed_tables = NULL,
     max_rows = 100,
     system_prompt = NULL,
+    progressbar = function(value, label = NULL) NULL,
     ...
 ) {
   .mcp_assert_scalar_character(question, "question")
@@ -827,6 +829,7 @@ mcp_chat_with_clickhouse <- function(
     api_key = api_key,
     base_url = base_url,
     system_prompt = system_prompt,
+    progressbar = progressbar,
     ...
   )
 }

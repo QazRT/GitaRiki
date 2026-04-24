@@ -285,7 +285,72 @@ set_table_ui <- function(df) {
     return(div(class = "set-empty", "Нет данных для этого раздела."))
   }
 
+  copy_commit_at_date <- attr(df, "copy_commit_at_date", exact = TRUE)
+  if (is.null(copy_commit_at_date) &&
+      ncol(df) >= 9L &&
+      "OSV ID" %in% names(df) &&
+      any(grepl("[[:xdigit:]]{7,}", as.character(df[[5L]])), na.rm = TRUE)) {
+    copy_commit_at_date <- list(date_col = 6L, commit_col = 5L)
+  }
+  if (is.list(copy_commit_at_date) &&
+      !is.null(copy_commit_at_date$commit_col) &&
+      identical(copy_commit_at_date$date_col, 6L) &&
+      identical(copy_commit_at_date$commit_col, 5L) &&
+      ncol(df) >= 9L) {
+    introduced_commits <- df[[5L]]
+    df <- df[, -c(5L, 8L), drop = FALSE]
+    copy_commit_at_date <- list(date_col = 5L, commits = introduced_commits)
+  }
   df <- utils::head(df, 12L)
+  return(div(
+    class = "set-report-table-wrap",
+    tags$table(
+      class = "set-report-table",
+      tags$thead(
+        tags$tr(lapply(names(df), function(name) tags$th(name)))
+      ),
+      tags$tbody(
+        lapply(seq_len(nrow(df)), function(i) {
+          tags$tr(lapply(seq_along(df), function(j) {
+            value <- as.character(df[[j]][[i]])
+            display_value <- value
+            if (is.na(display_value) || !nzchar(display_value)) {
+              display_value <- "\u2014"
+            }
+            if (is.list(copy_commit_at_date) &&
+                identical(j, copy_commit_at_date$date_col)) {
+              commit <- if (!is.null(copy_commit_at_date$commits) &&
+                            length(copy_commit_at_date$commits) >= i) {
+                as.character(copy_commit_at_date$commits[[i]])
+              } else if (!is.null(copy_commit_at_date$commit_col) &&
+                         copy_commit_at_date$commit_col %in% seq_along(df)) {
+                as.character(df[[copy_commit_at_date$commit_col]][[i]])
+              } else {
+                ""
+              }
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = commit,
+                      "👁"
+                    )
+                  )
+                ))
+              }
+            }
+            tags$td(display_value)
+          }))
+        })
+      )
+    )
+  ))
   div(
     class = "set-report-table-wrap",
     tags$table(
@@ -295,8 +360,30 @@ set_table_ui <- function(df) {
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
-          tags$tr(lapply(df[i, , drop = FALSE], function(value) {
-            value <- as.character(value[[1]])
+          tags$tr(lapply(seq_along(df), function(j) {
+            value <- as.character(df[[j]][[i]])
+            display_value <- if (is.na(value) || !nzchar(value)) "вЂ”" else value
+            if (is.list(copy_commit_at_date) &&
+                identical(j, copy_commit_at_date$date_col) &&
+                copy_commit_at_date$commit_col %in% seq_along(df)) {
+              commit <- as.character(df[[copy_commit_at_date$commit_col]][[i]])
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = "Copy commit",
+                      "Copy"
+                    )
+                  )
+                ))
+              }
+            }
             tags$td(if (is.na(value) || !nzchar(value)) "—" else value)
           }))
         })
@@ -409,7 +496,7 @@ set_title_page <- function(report) {
   }
 
   div(
-    class = paste("set-title-page", if (is_heaven) "set-title-heaven" else "set-title-hell"),
+    class = "set-title-page",
     div(
       class = "set-title-brand",
       img(
@@ -979,6 +1066,41 @@ ui <- fluidPage(
         if (data.label) {
           $('#set_progress_label').text(data.label);
         }
+      });
+
+      function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function(resolve, reject) {
+          var area = document.createElement('textarea');
+          area.value = text;
+          area.setAttribute('readonly', '');
+          area.style.position = 'fixed';
+          area.style.left = '-9999px';
+          document.body.appendChild(area);
+          area.select();
+          try {
+            document.execCommand('copy') ? resolve() : reject(new Error('copy failed'));
+          } catch (error) {
+            reject(error);
+          } finally {
+            document.body.removeChild(area);
+          }
+        });
+      }
+
+      $(document).on('click', '.copy-commit-button', function() {
+        var button = $(this);
+        var commit = String(button.data('commit') || '');
+        if (!commit) return;
+        copyTextToClipboard(commit).then(function() {
+          var previous = button.text();
+          button.addClass('copied').text('OK');
+          window.setTimeout(function() {
+            button.removeClass('copied').text(previous);
+          }, 900);
+        });
       });
 
       $(document).on('click', '#theme_hell', function() {
@@ -1766,6 +1888,9 @@ ui <- fluidPage(
           linear-gradient(180deg, rgba(36, 2, 4, 0.96), rgba(8, 0, 1, 0.98));
         box-shadow: inset 0 0 80px rgba(224, 24, 36, 0.18),
           0 20px 50px rgba(0, 0, 0, 0.26);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-page::before {
@@ -1775,14 +1900,36 @@ ui <- fluidPage(
         border: 1px solid rgba(255, 211, 90, 0.42);
         border-radius: 8px;
         pointer-events: none;
+        z-index: 2;
+        transition: border-color var(--theme-duration) var(--theme-ease);
       }
 
-      .set-title-heaven {
+      .set-title-page::after {
+        content: '';
+        position: absolute;
+        inset: 0;
         background:
           radial-gradient(circle at 50% 16%, rgba(255, 235, 160, 0.72), transparent 28%),
           linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 250, 255, 0.96));
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-title-page > * {
+        position: relative;
+        z-index: 1;
+      }
+
+      body.heaven-theme .set-title-page,
+      .set-title-heaven {
         box-shadow: inset 0 0 80px rgba(217, 165, 46, 0.16),
           0 20px 50px rgba(120, 154, 174, 0.2);
+      }
+
+      body.heaven-theme .set-title-page::after,
+      .set-title-heaven::after {
+        opacity: 1;
       }
 
       .set-title-brand {
@@ -1798,8 +1945,11 @@ ui <- fluidPage(
         border: 1px solid var(--line);
         border-radius: 8px;
         box-shadow: 0 0 22px rgba(224, 24, 36, 0.2);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-logo,
       .set-title-heaven .set-title-logo {
         box-shadow: 0 0 22px rgba(217, 165, 46, 0.24);
       }
@@ -1811,6 +1961,7 @@ ui <- fluidPage(
         font-weight: 900;
         line-height: 1;
         text-transform: uppercase;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-main {
@@ -1823,8 +1974,11 @@ ui <- fluidPage(
         letter-spacing: 0;
         text-transform: uppercase;
         text-shadow: 0 0 24px rgba(255, 43, 52, 0.42);
+        transition: color var(--theme-duration) var(--theme-ease),
+          text-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-main,
       .set-title-heaven .set-title-main {
         text-shadow: 0 0 24px rgba(217, 165, 46, 0.46);
       }
@@ -1833,6 +1987,7 @@ ui <- fluidPage(
         color: var(--ink);
         font-size: 24px;
         font-weight: 900;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-oath {
@@ -1841,6 +1996,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 16px;
         line-height: 1.55;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .divine-seals {
@@ -1861,8 +2017,10 @@ ui <- fluidPage(
         border-radius: 8px;
         color: var(--ink);
         background: transparent;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal,
       .set-title-heaven .divine-seal {
         background: transparent;
       }
@@ -1877,8 +2035,11 @@ ui <- fluidPage(
         object-fit: cover;
         background: rgba(6, 1, 1, 0.62);
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.36));
+        transition: background-color var(--theme-duration) var(--theme-ease),
+          filter var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal-image,
       .set-title-heaven .divine-seal-image {
         background: rgba(255, 255, 255, 0.62);
       }
@@ -1936,6 +2097,7 @@ ui <- fluidPage(
         font-size: 11px;
         font-weight: 800;
         line-height: 1.25;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .seal-isis {
@@ -1954,6 +2116,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 14px;
         font-weight: 800;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       body.heaven-theme .set-report-section {
@@ -2010,6 +2173,72 @@ ui <- fluidPage(
         color: var(--accent);
         font-weight: 900;
         white-space: normal;
+      }
+
+      .set-markdown table {
+        width: 100%;
+        margin: 10px 0;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+
+      .set-markdown th,
+      .set-markdown td {
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        color: var(--ink);
+        vertical-align: top;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-markdown th {
+        color: var(--accent);
+        font-weight: 900;
+      }
+
+      .commit-date-cell {
+        display: block;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
+      .copy-commit-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 22px;
+        margin-left: 4px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1;
+        cursor: pointer;
+        vertical-align: middle;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
+      }
+
+      .copy-commit-button:hover,
+      .copy-commit-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .copy-commit-button.copied {
+        color: var(--ink);
+        background: rgba(120, 214, 166, 0.16);
+      }
+
+      body.heaven-theme .copy-commit-button {
+        background: rgba(211, 29, 29, 0.07);
       }
 
       .set-plot-grid {
