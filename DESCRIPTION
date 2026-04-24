@@ -34,6 +34,7 @@ Imports:
     curl,
     mongolite,
     gh,
+    shiny,
     httr,
     dplyr,
     purrr,

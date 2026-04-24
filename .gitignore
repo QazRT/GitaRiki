@@ -38,6 +38,10 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+.Renviron.local
+.env
+.env.*
+.Rlibs/
 
 # pkgdown site
 docs/
@@ -49,5 +53,6 @@ po/*~
 rsconnect/
 syft.exe
 **/osv_db/**
+**/analysis_output/**
 **/Test/**
 **/.quarto/**
