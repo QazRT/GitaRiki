@@ -468,6 +468,18 @@ set_report_screen <- function(report) {
   )
 }
 
+boot_screen <- function() {
+  div(
+    class = "home",
+    brand_block(),
+    div(
+      class = "form menu-form",
+      h2(class = "section-title", "Пробуждение врат"),
+      p(class = "account-copy", "Проверяем сохраненный вход.")
+    )
+  )
+}
+
 archive_status_label <- function(status) {
   switch(status %||% "active", active = "активен", archived = "заархивировано", deleted = "удален", status)
 }
@@ -866,6 +878,19 @@ ui <- fluidPage(
         }
       }
 
+      function setupLoginAutofill() {
+        var email = $('#login_email');
+        var password = $('#login_password');
+        if (email.length) {
+          email.attr('autocomplete', 'username');
+          email.attr('name', 'username');
+        }
+        if (password.length) {
+          password.attr('autocomplete', 'current-password');
+          password.attr('name', 'current-password');
+        }
+      }
+
       function setCookie(name, value, maxAgeSeconds) {
         document.cookie = name + '=' + encodeURIComponent(value) +
           '; max-age=' + maxAgeSeconds + '; path=/; SameSite=Lax';
@@ -883,78 +908,68 @@ ui <- fluidPage(
         return null;
       }
 
-      function getRememberedLogin() {
-        try {
-          var raw = window.localStorage.getItem('githound_login_memory') || getCookie('githound_login_memory');
-          if (!raw) return null;
-          var data = JSON.parse(raw);
-          if (!data.expiresAt || Date.now() > data.expiresAt) {
-            window.localStorage.removeItem('githound_login_memory');
-            setCookie('githound_login_memory', '', 0);
-            return null;
-          }
-          return data;
-        } catch (error) {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
-          return null;
-        }
+      function clearLegacyRememberedLogin() {
+        window.localStorage.removeItem('githound_login_memory');
+        setCookie('githound_login_memory', '', 0);
+      }
+
+      function pushRememberToken() {
+        if (!window.Shiny) return;
+        var token = getCookie('githound_remember_token');
+        Shiny.setInputValue('remember_token', token || '', {priority: 'event'});
       }
 
       function fillRememberedLogin() {
-        var data = getRememberedLogin();
-        if (!data) return;
-        setInputValueIfPresent('login_email', data.email || '');
-        if (window.Shiny) {
-          Shiny.setInputValue('login_email', data.email || '', {priority: 'event'});
-        }
+        var token = getCookie('githound_remember_token');
         if ($('#remember_me').length) {
-          $('#remember_me').prop('checked', true).trigger('change');
+          var enabled = !!token;
+          $('#remember_me').prop('checked', enabled).trigger('change');
           if (window.Shiny) {
-            Shiny.setInputValue('remember_me', true, {priority: 'event'});
+            Shiny.setInputValue('remember_me', enabled, {priority: 'event'});
           }
         }
+        try {
+          var rememberedEmail = window.localStorage.getItem('githound_remember_email') || '';
+          if (rememberedEmail) {
+            setInputValueIfPresent('login_email', rememberedEmail);
+            if (window.Shiny) {
+              Shiny.setInputValue('login_email', rememberedEmail, {priority: 'event'});
+            }
+          }
+        } catch (error) {}
       }
 
       function storeRememberedLoginFromForm() {
-        var remember = $('#remember_me').is(':checked');
-        if (remember) {
-          var payload = JSON.stringify({
-            email: $('#login_email').val() || '',
-            expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
-          });
-          window.localStorage.setItem('githound_login_memory', payload);
-          setCookie('githound_login_memory', payload, 14 * 24 * 60 * 60);
-        } else {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
-        }
+        return $('#remember_me').is(':checked');
       }
 
       $(document).ready(function() {
+        clearLegacyRememberedLogin();
         fillRememberedLogin();
+        setupLoginAutofill();
+        setTimeout(pushRememberToken, 0);
         if (window.Shiny) {
           Shiny.setInputValue('theme_mode', document.body.classList.contains('heaven-theme') ? 'heaven' : 'hell', {priority: 'event'});
         }
         var observer = new MutationObserver(function() {
           fillRememberedLogin();
+          setupLoginAutofill();
           restoreArchiveSelection();
         });
         observer.observe(document.body, { childList: true, subtree: true });
       });
 
-      Shiny.addCustomMessageHandler('rememberLogin', function(data) {
-        if (data.remember) {
-          var payload = JSON.stringify({
-            email: data.email || '',
-            expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
-          });
-          window.localStorage.setItem('githound_login_memory', payload);
-          setCookie('githound_login_memory', payload, 14 * 24 * 60 * 60);
+      Shiny.addCustomMessageHandler('rememberToken', function(data) {
+        if (data && data.token) {
+          setCookie('githound_remember_token', data.token, data.maxAgeSeconds || (30 * 24 * 60 * 60));
+          if (data.email) {
+            window.localStorage.setItem('githound_remember_email', data.email);
+          }
         } else {
-          window.localStorage.removeItem('githound_login_memory');
-          setCookie('githound_login_memory', '', 0);
+          setCookie('githound_remember_token', '', 0);
+          window.localStorage.removeItem('githound_remember_email');
         }
+        fillRememberedLogin();
       });
 
       Shiny.addCustomMessageHandler('setSetProgress', function(data) {
@@ -976,7 +991,9 @@ ui <- fluidPage(
       });
 
       $(document).on('click', '#submit_login', function() {
-        storeRememberedLoginFromForm();
+        if (window.Shiny) {
+          Shiny.setInputValue('remember_me', storeRememberedLoginFromForm(), {priority: 'event'});
+        }
       });
 
       $(document).on('click', '#theme_heaven', function() {
@@ -2647,13 +2664,16 @@ server <- function(input, output, session) {
     })
   }
 
-  current_page <- reactiveVal("landing")
+  current_page <- reactiveVal("boot")
   avatars_open <- reactiveVal(FALSE)
   analysis_target <- reactiveVal(NULL)
   theme_mode <- reactiveVal("hell")
   set_report <- reactiveVal(NULL)
   report_archive <- reactiveVal(list())
   archive_page <- reactiveVal(1L)
+  remember_token <- reactiveVal(NULL)
+  remember_attempted <- reactiveVal(FALSE)
+  remember_input_seen <- reactiveVal(FALSE)
   set_progress <- reactiveValues(value = 0, label = "Ожидание запуска")
   account <- reactiveValues(
     email = NULL,
@@ -3005,11 +3025,17 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$logout_confirm, {
+    if (nzchar(remember_token() %||% "")) {
+      try(revoke_githound_remember_tokens(conn, token = remember_token()), silent = TRUE)
+    }
+    session$sendCustomMessage("rememberToken", list(token = ""))
     removeModal()
     account$email <- NULL
     account$nickname <- NULL
     account$avatar_id <- "egypt_1"
     account$github_token <- ""
+    remember_token(NULL)
+    remember_attempted(TRUE)
     report_archive(list())
     archive_page(1L)
     analysis_target(NULL)
@@ -3155,18 +3181,79 @@ server <- function(input, output, session) {
       account$avatar_id <- logged_in$avatar_id[[1]]
       account$github_token <- logged_in$github_token[[1]] %||% ""
       load_user_archive()
-      session$sendCustomMessage(
-        "rememberLogin",
-        list(
-          remember = isTRUE(input$remember_me),
-          email = input$login_email %||% ""
-        )
-      )
+      if (isTRUE(input$remember_me)) {
+        token_info <- issue_githound_remember_token(conn, logged_in$email[[1]], days = 30L)
+        remember_token(token_info$token)
+        session$sendCustomMessage("rememberToken", list(
+          token = token_info$token,
+          email = logged_in$email[[1]],
+          maxAgeSeconds = 30L * 24L * 60L * 60L
+        ))
+      } else {
+        if (nzchar(remember_token() %||% "")) {
+          try(revoke_githound_remember_tokens(conn, token = remember_token()), silent = TRUE)
+        }
+        remember_token(NULL)
+        session$sendCustomMessage("rememberToken", list(token = ""))
+      }
+      remember_attempted(TRUE)
       current_page("analysis")
       notify_user("Вход выполнен.", type = "message")
     }, error = function(e) {
       notify_user(conditionMessage(e), type = "error", duration = 7)
     })
+  })
+
+  observeEvent(input$remember_token, {
+    if (!isTRUE(remember_input_seen())) {
+      remember_input_seen(TRUE)
+    }
+    token <- trimws(input$remember_token %||% "")
+    if (nzchar(account$email %||% "")) {
+      if (nzchar(token)) remember_token(token)
+      return()
+    }
+    if (isTRUE(remember_attempted()) && !identical(current_page(), "boot")) {
+      if (nzchar(token)) remember_token(token) else remember_token(NULL)
+      return()
+    }
+    if (!nzchar(token)) {
+      remember_token(NULL)
+      remember_attempted(TRUE)
+      if (identical(current_page(), "boot")) {
+        current_page("landing")
+      }
+      return()
+    }
+    remember_attempted(TRUE)
+
+    tryCatch({
+      remembered <- login_githound_account_by_remember_token(conn, token)
+      account$email <- remembered$email[[1]]
+      account$nickname <- remembered$nickname[[1]]
+      account$avatar_id <- remembered$avatar_id[[1]]
+      account$github_token <- remembered$github_token[[1]] %||% ""
+      remember_token(token)
+      load_user_archive()
+      current_page("analysis")
+    }, error = function(e) {
+      remember_token(NULL)
+      session$sendCustomMessage("rememberToken", list(token = ""))
+      if (identical(current_page(), "boot")) {
+        current_page("landing")
+      }
+    })
+  }, ignoreInit = FALSE)
+
+  observe({
+    if (!identical(current_page(), "boot")) {
+      return()
+    }
+    invalidateLater(1800, session)
+    if (isTRUE(remember_input_seen()) || isTRUE(remember_attempted()) || nzchar(account$email %||% "")) {
+      return()
+    }
+    current_page("landing")
   })
 
   observeEvent(input$avatar_id, {
@@ -3281,7 +3368,9 @@ server <- function(input, output, session) {
 })
 
   output$page <- renderUI({
-    if (identical(current_page(), "registration")) {
+    if (identical(current_page(), "boot")) {
+      boot_screen()
+    } else if (identical(current_page(), "registration")) {
       registration_screen()
     } else if (identical(current_page(), "login")) {
       login_screen()

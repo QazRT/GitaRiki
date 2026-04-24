@@ -125,6 +125,25 @@ githound_password_hash <- function(password) {
   paste0("demo-", sum(utf8ToInt(password) * seq_along(utf8ToInt(password))))
 }
 
+githound_raw_to_hex <- function(raw_value) {
+  paste(sprintf("%02x", as.integer(raw_value)), collapse = "")
+}
+
+githound_token_hash <- function(token) {
+  token <- enc2utf8(as.character(token))
+  if (requireNamespace("openssl", quietly = TRUE)) {
+    return(githound_raw_to_hex(openssl::sha256(charToRaw(token))))
+  }
+  githound_password_hash(token)
+}
+
+githound_random_token <- function(bytes = 32L) {
+  if (requireNamespace("openssl", quietly = TRUE)) {
+    return(githound_raw_to_hex(openssl::rand_bytes(bytes)))
+  }
+  paste0(sample(c(letters, LETTERS, 0:9), bytes * 2L, replace = TRUE), collapse = "")
+}
+
 ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts") {
   load_clickhouse_connector()
 
@@ -147,6 +166,143 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
 
   clickhouse_request(conn, sql, parse_json = FALSE)
   invisible(TRUE)
+}
+
+ensure_githound_remember_table <- function(conn, table_name = "githound_remember_tokens") {
+  load_clickhouse_connector()
+
+  sql <- paste0(
+    "CREATE TABLE IF NOT EXISTS ",
+    quote_table_ident(table_name, conn$dbname),
+    " (",
+    "token_hash String, ",
+    "email String, ",
+    "status String, ",
+    "created_at DateTime, ",
+    "expires_at DateTime, ",
+    "updated_at DateTime, ",
+    "version UInt64",
+    ") ENGINE = ReplacingMergeTree(version) ",
+    "ORDER BY (email, token_hash)"
+  )
+
+  clickhouse_request(conn, sql, parse_json = FALSE)
+  invisible(TRUE)
+}
+
+revoke_githound_remember_tokens <- function(
+    conn,
+    email = NULL,
+    token = NULL,
+    table_name = "githound_remember_tokens"
+) {
+  ensure_githound_remember_table(conn, table_name)
+
+  email <- normalize_githound_email(email %||% "")
+  token_hash <- if (nzchar(token %||% "")) githound_token_hash(token) else ""
+  if (!nzchar(email) && !nzchar(token_hash)) {
+    return(invisible(FALSE))
+  }
+
+  now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  if (nzchar(token_hash)) {
+    sql <- paste0(
+      "SELECT email, token_hash, created_at, expires_at FROM ",
+      quote_table_ident(table_name, conn$dbname),
+      " FINAL WHERE token_hash = ",
+      githound_sql_string(token_hash),
+      " LIMIT 1"
+    )
+  } else {
+    sql <- paste0(
+      "SELECT email, token_hash, created_at, expires_at FROM ",
+      quote_table_ident(table_name, conn$dbname),
+      " FINAL WHERE lower(email) = ",
+      githound_sql_string(email),
+      " AND status = 'active'"
+    )
+  }
+
+  rows <- query_clickhouse(conn, sql)
+  if (!is.data.frame(rows) || nrow(rows) == 0L) {
+    return(invisible(FALSE))
+  }
+
+  rows$status <- "revoked"
+  rows$updated_at <- now
+  rows$version <- as.integer(as.numeric(Sys.time()))
+  load_df_to_clickhouse(rows[, c("token_hash", "email", "status", "created_at", "expires_at", "updated_at", "version"), drop = FALSE],
+    table_name = table_name, conn = conn, append = TRUE
+  )
+  invisible(TRUE)
+}
+
+issue_githound_remember_token <- function(
+    conn,
+    email,
+    days = 30L,
+    table_name = "githound_remember_tokens"
+) {
+  ensure_githound_remember_table(conn, table_name)
+  email <- normalize_githound_email(email)
+  if (!nzchar(email)) {
+    stop("Не указана почта для remember-token.", call. = FALSE)
+  }
+
+  revoke_githound_remember_tokens(conn, email = email, table_name = table_name)
+
+  token <- githound_random_token(32L)
+  now <- Sys.time()
+  expires_at <- now + as.numeric(days) * 24 * 60 * 60
+  row <- data.frame(
+    token_hash = githound_token_hash(token),
+    email = email,
+    status = "active",
+    created_at = format(now, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+    expires_at = format(expires_at, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+    updated_at = format(now, "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+    version = as.integer(as.numeric(now)),
+    stringsAsFactors = FALSE
+  )
+
+  load_df_to_clickhouse(row, table_name = table_name, conn = conn, append = TRUE)
+  list(token = token, expires_at = expires_at)
+}
+
+login_githound_account_by_remember_token <- function(
+    conn,
+    token,
+    remember_table = "githound_remember_tokens",
+    accounts_table = "githound_accounts"
+) {
+  ensure_githound_remember_table(conn, remember_table)
+  token <- enc2utf8(as.character(token))
+  if (!nzchar(token)) {
+    stop("Не указан remember-token.", call. = FALSE)
+  }
+
+  token_hash <- githound_token_hash(token)
+  sql <- paste0(
+    "SELECT * FROM ",
+    quote_table_ident(remember_table, conn$dbname),
+    " FINAL WHERE token_hash = ",
+    githound_sql_string(token_hash),
+    " ORDER BY version DESC LIMIT 1"
+  )
+  remember_row <- query_clickhouse(conn, sql)
+  if (!is.data.frame(remember_row) || nrow(remember_row) == 0L) {
+    stop("Remember-token не найден.", call. = FALSE)
+  }
+  if (!identical(as.character(remember_row$status[[1]]), "active")) {
+    stop("Remember-token недействителен.", call. = FALSE)
+  }
+  expires_at <- as.POSIXct(remember_row$expires_at[[1]], tz = "UTC")
+  if (is.na(expires_at) || Sys.time() >= expires_at) {
+    revoke_githound_remember_tokens(conn, token = token, table_name = remember_table)
+    stop("Срок remember-token истек.", call. = FALSE)
+  }
+
+  get_githound_account(conn, remember_row$email[[1]], accounts_table)
 }
 
 get_githound_account <- function(conn, email, table_name = "githound_accounts") {
