@@ -202,6 +202,8 @@ set_find_osv_db <- function(root) {
 
 set_find_syft <- function(root) {
   candidates <- unique(c(
+    file.path(root, "syft"),
+    file.path(getwd(), "syft"),
     file.path(root, "syft.exe"),
     file.path(getwd(), "syft.exe"),
     unname(Sys.which("syft")),
@@ -255,68 +257,6 @@ set_read_osv_config_file <- function() {
   list()
 }
 
-set_load_osv_backend <- function(root) {
-  config_file <- set_read_osv_config_file()
-  mongo_url <- Sys.getenv("OSV_MONGO_URL", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGO_URL", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGODB_URI", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGO_URI", "")
-  if (!nzchar(mongo_url)) mongo_url <- config_file$mongo_url %||% ""
-  if (!nzchar(mongo_url)) mongo_url <- "mongodb://localhost:27017"
-
-  mongo_db <- Sys.getenv("OSV_MONGO_DB", "")
-  if (!nzchar(mongo_db)) mongo_db <- config_file$db_name %||% "osv"
-
-  mongo_collection <- Sys.getenv("OSV_MONGO_COLLECTION", "")
-  if (!nzchar(mongo_collection)) mongo_collection <- config_file$collection %||% "vulns"
-  mongo_error <- NULL
-
-  if (!requireNamespace("mongolite", quietly = TRUE)) {
-    mongo_error <- "Package 'mongolite' is required for MongoDB backend. Установите пакет mongolite в R."
-  } else if (exists("load_osv_mongo_database", mode = "function") && nzchar(mongo_url)) {
-    mongo_result <- tryCatch({
-      list(
-        db = load_osv_mongo_database(
-          mongo_url = mongo_url,
-          db_name = mongo_db,
-          collection = mongo_collection,
-          validate = TRUE
-        ),
-        message = paste0("База OSV подключена через MongoDB: ", mongo_db, ".", mongo_collection)
-      )
-    }, error = function(e) {
-      list(error = conditionMessage(e))
-    })
-
-    if (is.list(mongo_result) && !is.null(mongo_result$db)) {
-      return(mongo_result)
-    }
-    mongo_error <- mongo_result$error
-  }
-
-  osv_dir <- set_find_osv_db(root)
-  if (nzchar(osv_dir) && !is.na(osv_dir)) {
-    local_result <- tryCatch({
-      list(
-        db = load_osv_database(osv_dir, load_index = TRUE),
-        message = "База OSV подключена из локальной папки osv_db."
-      )
-    }, error = function(e) {
-      list(error = conditionMessage(e))
-    })
-
-    if (is.list(local_result) && !is.null(local_result$db)) {
-      return(local_result)
-    }
-  }
-
-  list(
-    db = NULL,
-    message = "База OSV не подключена. Проверьте MongoDB OSV или локальную папку osv_db.",
-    error = mongo_error
-  )
-}
-
 run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = function(value, label = NULL) NULL) {
   root <- find_githound_project_root()
   syft_path <- set_find_syft(root)
@@ -329,38 +269,31 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
   }
 
   progress(76, "Подключение базы уязвимостей OSV")
-  osv_backend <- set_load_osv_backend(root)
-  if (is.null(osv_backend$db)) {
-    message <- osv_backend$message
-    if (nzchar(osv_backend$error %||% "")) {
-      message <- paste(message, osv_backend$error)
-    }
-    return(list(status = "connection_error", message = message))
-  }
+  
+  mongo_url <- Sys.getenv("OSV_MONGO_URL", "")
+  mongo_db <- Sys.getenv("OSV_MONGO_DB", "")
+  mongo_coll <- Sys.getenv("OSV_MONGO_COLLECTION", "")
+  osv_db <- load_osv_mongo_database(
+    mongo_url = mongo_url,
+    db_name = mongo_db,
+    collection = mongo_coll,
+    validate = FALSE
+  )
 
   tryCatch({
     progress(82, "Поиск уязвимостей зависимостей")
     scan_args <- list(
       profile = profile,
-      osv_db = osv_backend$db,
-      token = token,
-      syft_path = syft_path,
-      include_uncertain = TRUE,
-      keep_snapshots = FALSE,
-      force_scan = FALSE,
+      osv_db = osv_db,
       parallel_strategy = "auto",
       auto_workers = 16L,
-      repo_progress = TRUE,
-      repo_progress_every = 10L,
-      repo_progress_details = FALSE,
-      syft_timeout_sec = 0L,
-      commit_info_parallel = TRUE,
-      commit_info_workers = 4L,
+      syft_path = syft_path,
+      token = token,
       conn = conn,
       clickhouse_incremental = TRUE,
-      incremental_compare_commits_by_sha = TRUE,
-      debug = TRUE,
-      debug_repo_every = 10L
+      incremental_compare_commits_by_sha = TRUE
+      # debug = TRUE,
+      # debug_repo_every = 10L
     )
     supported_args <- names(formals(analyze_user_commits_with_syft_osv))
     scan <- do.call(
@@ -374,7 +307,7 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
       list()
     }
 
-    list(status = "ok", message = paste("Поиск уязвимостей выполнен.", osv_backend$message), scan = scan, diagnostics = diagnostics)
+    list(status = "ok", message = paste("Поиск уязвимостей выполнен."), scan = scan, diagnostics = diagnostics)
   }, error = function(e) {
     list(status = "error", message = conditionMessage(e))
   })

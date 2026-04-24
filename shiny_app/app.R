@@ -3387,7 +3387,11 @@ server <- function(input, output, session) {
     } else if (identical(current_page(), "set_loading")) {
       set_loading_screen(analysis_target() %||% "")
     } else if (identical(current_page(), "set_report")) {
-      set_report_screen(set_report())
+      report <- set_report()
+      if (is.list(report)) {
+        report$view_theme <- theme_mode()
+      }
+      set_report_screen(report)
     } else if (identical(current_page(), "archive")) {
       records <- report_archive()
       max_page <- max(1L, ceiling(length(records) / 15L))
