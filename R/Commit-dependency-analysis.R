@@ -219,8 +219,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     "repository", "vulnerability_key", "osv_id",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
-    "introduced_sha", "introduced_date", "introduced_message", "introduced_dependency_files",
-    "fixed_sha", "fixed_date", "fixed_message", "fixed_dependency_files",
+    "introduced_sha", "introduced_author", "introduced_date", "introduced_message", "introduced_dependency_files",
+    "fixed_sha", "fixed_author", "fixed_date", "fixed_message", "fixed_dependency_files",
     "status"
   )
 
@@ -263,10 +263,12 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       component_name = row_get(row_df, "component_name"),
       component_purl = row_get(row_df, "component_purl"),
       introduced_sha = .osv_null(state$introduced$sha, NA_character_),
+      introduced_author = .osv_null(state$introduced$author, NA_character_),
       introduced_date = .osv_null(state$introduced$date, NA_character_),
       introduced_message = .osv_null(state$introduced$message, NA_character_),
       introduced_dependency_files = .osv_null(state$introduced$dependency_files, NA_character_),
       fixed_sha = if (!is.null(close_snapshot)) .osv_null(close_snapshot$sha, NA_character_) else NA_character_,
+      fixed_author = if (!is.null(close_snapshot)) .osv_null(close_snapshot$author, NA_character_) else NA_character_,
       fixed_date = if (!is.null(close_snapshot)) .osv_null(close_snapshot$date, NA_character_) else NA_character_,
       fixed_message = if (!is.null(close_snapshot)) .osv_null(close_snapshot$message, NA_character_) else NA_character_,
       fixed_dependency_files = if (!is.null(close_snapshot)) .osv_null(close_snapshot$dependency_files, NA_character_) else NA_character_,
@@ -289,6 +291,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
             row = .osv_null(current_key_rows[[k]], data.frame()),
             introduced = list(
               sha = .osv_null(snap$sha, NA_character_),
+              author = .osv_null(snap$author, NA_character_),
               date = .osv_null(snap$date, NA_character_),
               message = .osv_null(snap$message, NA_character_),
               dependency_files = .osv_null(snap$dependency_files, NA_character_)
@@ -639,6 +642,10 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   for (commit_idx in seq_along(commits)) {
     cmt <- commits[[commit_idx]]
     sha <- .osv_to_scalar(cmt$sha)
+    commit_author <- .osv_to_scalar(cmt$author$login)
+    if (!.osv_non_empty(commit_author)) {
+      commit_author <- .osv_to_scalar(cmt$commit$author$name)
+    }
     commit_date <- .osv_to_scalar(cmt$commit$author$date)
     commit_message <- .osv_to_scalar(cmt$commit$message)
 
@@ -760,6 +767,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       scan_snapshots[[length(scan_snapshots) + 1L]] <- list(
         order = commit_idx,
         sha = sha,
+        author = commit_author,
         date = commit_date,
         message = commit_message,
         dependency_files = paste(dep_files, collapse = ";"),
@@ -835,6 +843,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 analyze_user_commits_with_syft_osv <- function(
     profile,
     osv_db,
+    conn = NULL,
     token = NULL,
     syft_path = "syft.exe",
     dependency_patterns = default_dependency_manifest_patterns(),
@@ -915,9 +924,12 @@ analyze_user_commits_with_syft_osv <- function(
   repos_df <- NULL
   if (exists("get_github_repos", mode = "function")) {
     repos_df <- tryCatch(
-      get_github_repos(username, token = token),
+      get_github_repos(username, token = token, conn = conn),
       error = function(e) {
         msg <- conditionMessage(e)
+        if (is.null(conn) && grepl("параметре 'conn'|parameter 'conn'", msg, ignore.case = TRUE, perl = TRUE)) {
+          return(NULL)
+        }
         if (grepl("404", msg, fixed = TRUE)) {
           stop(
             "GitHub user not found: '", username, "'. ",
@@ -928,7 +940,9 @@ analyze_user_commits_with_syft_osv <- function(
         stop(msg, call. = FALSE)
       }
     )
-  } else {
+  }
+
+  if (is.null(repos_df)) {
     .gh_require()
     repos <- tryCatch(
       gh::gh(
@@ -1321,8 +1335,8 @@ analyze_user_commits_with_syft_osv <- function(
       "repository", "vulnerability_key", "osv_id",
       "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
       "component_name", "component_purl",
-      "introduced_sha", "introduced_date", "introduced_message", "introduced_dependency_files",
-      "fixed_sha", "fixed_date", "fixed_message", "fixed_dependency_files",
+      "introduced_sha", "introduced_author", "introduced_date", "introduced_message", "introduced_dependency_files",
+      "fixed_sha", "fixed_author", "fixed_date", "fixed_message", "fixed_dependency_files",
       "status"
     )
   )

@@ -21,14 +21,28 @@ source_candidates <- c(
   file.path(getwd(), "account_storage.R"),
   file.path(getwd(), "shiny_app", "account_storage.R")
 )
-source_path <- source_candidates[file.exists(source_candidates)][[1]]
+existing_source_paths <- source_candidates[file.exists(source_candidates)]
+if (length(existing_source_paths) == 0L) {
+  stop(
+    "Не найден account_storage.R. Ожидался файл account_storage.R в текущей директории или в shiny_app/.",
+    call. = FALSE
+  )
+}
+source_path <- existing_source_paths[[1]]
 source(source_path, encoding = "UTF-8")
 
 set_protocol_candidates <- c(
   file.path(getwd(), "set_protocol.R"),
   file.path(getwd(), "shiny_app", "set_protocol.R")
 )
-set_protocol_path <- set_protocol_candidates[file.exists(set_protocol_candidates)][[1]]
+existing_set_protocol_paths <- set_protocol_candidates[file.exists(set_protocol_candidates)]
+if (length(existing_set_protocol_paths) == 0L) {
+  stop(
+    "Не найден set_protocol.R. Ожидался файл set_protocol.R в текущей директории или в shiny_app/.",
+    call. = FALSE
+  )
+}
+set_protocol_path <- existing_set_protocol_paths[[1]]
 source(set_protocol_path, encoding = "UTF-8")
 
 app_dir <- dirname(normalizePath(set_protocol_path, winslash = "/", mustWork = FALSE))
@@ -291,6 +305,35 @@ set_table_ui <- function(df) {
   )
 }
 
+set_markdown_ui <- function(text) {
+  text <- paste(as.character(text %||% ""), collapse = "\n")
+  text <- trimws(text)
+  if (!nzchar(text)) {
+    return(div(class = "set-empty", "Нет данных для этого раздела."))
+  }
+
+  rendered <- NULL
+  if (requireNamespace("commonmark", quietly = TRUE)) {
+    rendered <- commonmark::markdown_html(
+      text,
+      hardbreaks = TRUE,
+      extensions = c("table", "strikethrough", "autolink")
+    )
+  } else if (requireNamespace("markdown", quietly = TRUE)) {
+    rendered <- markdown::markdownToHTML(
+      text = text,
+      fragment.only = TRUE,
+      options = c("tables", "fenced_code_blocks", "autolink")
+    )
+  }
+
+  if (is.null(rendered) || !nzchar(rendered)) {
+    return(tags$pre(text))
+  }
+
+  div(class = "set-markdown", HTML(rendered))
+}
+
 set_plot_src <- function(path) {
   if (is.null(path) || !nzchar(path) || !file.exists(path)) {
     return(NULL)
@@ -389,7 +432,7 @@ set_report_screen <- function(report) {
           class = "set-report-section",
           h3(class = "set-report-title", section$title %||% "Раздел"),
           p(class = "set-report-text", section$text %||% ""),
-          set_table_ui(section$table)
+          if (isTRUE(section$render_markdown)) set_markdown_ui(section$markdown %||% "") else set_table_ui(section$table)
         )
       }),
       set_plots_ui(report),
@@ -2297,6 +2340,65 @@ server <- function(input, output, session) {
 
     analysis_target(target)
     current_page("protocol")
+  })
+
+  observeEvent(input$run_isis, {
+    target <- trimws(analysis_target() %||% "")
+
+    if (!nzchar(target)) {
+      notify_user("Не указана цель.", type = "error", duration = 6)
+      current_page("analysis")
+      return()
+    }
+
+    set_report(NULL)
+    set_progress$value <- 0
+    set_progress$label <- "Запуск протокола Исиды"
+    launch_theme <- theme_mode()
+    archive_same_target(target)
+    current_page("set_loading")
+    try(session$flushReact(), silent = TRUE)
+    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
+
+    progress_label <- "Запуск протокола Исиды"
+    run_isis_job <- function() {
+      tryCatch({
+        result <- run_isis_protocol(
+          profile = target,
+          conn = conn,
+          progress = function(value, label = NULL) {
+            set_progress$value <- value
+            if (!is.null(label) && nzchar(label)) {
+              progress_label <<- label
+    set_progress$label <- "Запуск протокола Исиды"
+            }
+            session$sendCustomMessage(
+              "setSetProgress",
+              list(value = value, label = progress_label)
+            )
+            try(session$flushReact(), silent = TRUE)
+          }
+        )
+
+        report <- result$report
+        report$theme <- launch_theme
+        set_report(report)
+        add_report_to_archive(report, target)
+        current_page("set_report")
+      }, error = function(e) {
+        set_progress$value <- 0
+    set_progress$label <- "Запуск протокола Исиды"
+    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
+        notify_user(conditionMessage(e), type = "error", duration = 10)
+        current_page("protocol")
+      })
+    }
+
+    if (requireNamespace("later", quietly = TRUE)) {
+      later::later(run_isis_job, delay = 0.2)
+    } else {
+      run_isis_job()
+    }
   })
 
   observeEvent(input$run_set, {
