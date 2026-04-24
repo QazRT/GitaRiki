@@ -1,0 +1,161 @@
+---
+title: "Анализ Git репозиториев"
+format: 
+  revealjs:
+    theme: default
+    css: custom.css
+    slide-number: true
+    transition: slide
+    center: true
+    width: 1280
+    height: 720
+    background-color: "#F3F1ED"
+---
+
+##  {background-color="#F3F1ED"}
+
+:::: {style="position: relative; display: flex; flex-direction: column; justify-content: center; height: 100%;"}
+
+<img src="githound1.png" style="position: absolute; top: -15px; right: 5px; width: 315px; height: auto;" />
+
+<h1 style="font-size: 3em; color: #095bb8; margin-bottom: 20px;">
+
+Анализ Git репозиториев
+</h1>
+
+`<p style="font-size: 1.5em; color: #222222; font-style: italic; margin-bottom: 50px;`{=html} margin-top: -50px; `">`{=html}
+Создание поведенческого профиля разработчика, анализ аномалий
+
+</p>
+
+::: {style="text-align: right; margin-top: 20px;"}
+<p style="font-size: 0.9em; margin: 5px 0; color: #222222; margin-top: -50px;">
+
+Заргаров А.Д.
+
+</p>
+
+<p style="font-size: 0.9em; margin: 5px 0; color: #222222;">
+
+Миронов П.Э.
+
+</p>
+
+<p style="font-size: 0.9em; margin: 5px 0; color: #222222;">
+
+Соколова М.М.
+
+</p>
+:::
+::::
+
+---
+
+## Архитектура ETL-модуля
+
+:::: {.columns}
+
+::: {.column width="33%"}
+
+### Источники
+
+<div class="card">
+
+**GitHub API**  
+Аккаунт, репозитории, коммиты, участие  
+
+**OSV API**  
+Уязвимости  
+
+</div>
+
+:::
+
+::: {.column width="33%"}
+
+### Обработка
+
+<div class="card">
+
+- Очистка данных  
+- Нормализация  
+- Обогащение  
+- Валидация  
+
+</div>
+
+:::
+
+::: {.column width="33%"}
+
+### Хранилище
+
+<div class="card">
+
+**ClickHouse**  
+Данные, связанные с пользователем (OLAP, аналитика)  
+
+**MongoDB**  
+Данные об уязвимостях (гибкая схема, вложенные структуры) 
+
+</div>
+
+:::
+
+::::
+
+---
+
+## Что собираем из GitHub
+
+<div style="font-size: 1em;">
+
+| Категория | Данные |
+|---------|----------|
+| **Аккаунт** | login, name, bio, location, created_at, followers, following, public_repos |
+| **Репозитории** | name, stars, forks, watchers, language, size, created/updated_at |
+| **Коммиты** | hash, date, message, additions, deletions, files_changed |
+| **Участие** | repo_name, role(contributor), total_commits, first_contribution, last_contribution |
+
+</div>
+
+---
+
+## Пример реализации в ClickHouse
+
+<div style="text-align: center; margin-top: 20px;">
+  <img src="ClickHouse_example.png" style="width: 100%; max-width: 1100px; border-radius: 10px;" />
+</div>
+
+---
+
+## Сбор уязвимостей из OSV
+
+### Подход
+
+- Первично выгружаем **всю базу данных OSV**  
+- **Регулярно** выгружаем инкремент относительной нашей БД
+
+### Особенности
+
+- Преобразуем данные в удобную структуру  
+  (нормализация, выделение пакетов, версий, экосистем)  
+- Строим связи: пакет → версия → уязвимость  
+- Кэшируем данные в **MongoDB** 
+- Исключаем зависимость от внешнего API во время анализа
+
+----
+
+::: {style="display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%;"}
+<h1 style="font-size: 3em; color: #095bb8; text-align: center; margin-bottom: 20px;">
+
+Спасибо за внимание!
+
+</h1>
+
+<p style="font-size: 1.5em; color: #222222; text-align: center;">
+
+Будем рады ответить на ваши вопросы
+
+</p>
+:::

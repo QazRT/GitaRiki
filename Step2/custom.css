@@ -1,0 +1,51 @@
+
+.reveal h1, .reveal h2 {
+  color: #095bb8;
+}
+
+.card {
+  background: #ffffff;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+  font-size: 0.9em;
+}
+
+.reveal table {
+  font-size: 0.8em;
+}
+
+.reveal section img {
+  border: none;
+  box-shadow: none;
+}
+
+.hero-icon {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.subtitle {
+  margin-top: 45px;
+  font-size: 1.1em;
+  color: #0559cf;
+  line-height: 1.5;
+}
+
+.authors {
+  margin-top: 95px;
+  font-size: 0.85em;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.year {
+  margin-top: 35px;
+  font-size: 0.75em;
+  color: #64748b;
+}
+
+.reveal {
+  background-color: #F3F1ED;
+}
