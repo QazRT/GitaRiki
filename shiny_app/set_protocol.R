@@ -405,8 +405,8 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Первые найденные совпадения по пакетам и версиям. Подробные описания укорочены для читаемости.",
       table = set_prepare_table(
         scan$vulnerabilities,
-        c("repository", "sha", "component_name", "component_version", "matched_ecosystem", "osv_id", "summary", "affected"),
-        c("Репозиторий", "Коммит", "Пакет", "Экосистема", "Версия", "OSV ID", "Описание", "Критичность"),
+        c("repository", "sha", "component_name", "matched_ecosystem", "component_version", "osv_id", "summary"),
+        c("Репозиторий", "Коммит", "Пакет", "Экосистема", "Версия", "Vuln ID", "Описание"),
         limit = 100L,
         max_chars = 75L
       )

@@ -409,7 +409,7 @@ set_title_page <- function(report) {
   }
 
   div(
-    class = paste("set-title-page", if (is_heaven) "set-title-heaven" else "set-title-hell"),
+    class = "set-title-page",
     div(
       class = "set-title-brand",
       img(
@@ -1766,6 +1766,9 @@ ui <- fluidPage(
           linear-gradient(180deg, rgba(36, 2, 4, 0.96), rgba(8, 0, 1, 0.98));
         box-shadow: inset 0 0 80px rgba(224, 24, 36, 0.18),
           0 20px 50px rgba(0, 0, 0, 0.26);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-page::before {
@@ -1775,14 +1778,36 @@ ui <- fluidPage(
         border: 1px solid rgba(255, 211, 90, 0.42);
         border-radius: 8px;
         pointer-events: none;
+        z-index: 2;
+        transition: border-color var(--theme-duration) var(--theme-ease);
       }
 
-      .set-title-heaven {
+      .set-title-page::after {
+        content: '';
+        position: absolute;
+        inset: 0;
         background:
           radial-gradient(circle at 50% 16%, rgba(255, 235, 160, 0.72), transparent 28%),
           linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 250, 255, 0.96));
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-title-page > * {
+        position: relative;
+        z-index: 1;
+      }
+
+      body.heaven-theme .set-title-page,
+      .set-title-heaven {
         box-shadow: inset 0 0 80px rgba(217, 165, 46, 0.16),
           0 20px 50px rgba(120, 154, 174, 0.2);
+      }
+
+      body.heaven-theme .set-title-page::after,
+      .set-title-heaven::after {
+        opacity: 1;
       }
 
       .set-title-brand {
@@ -1798,8 +1823,11 @@ ui <- fluidPage(
         border: 1px solid var(--line);
         border-radius: 8px;
         box-shadow: 0 0 22px rgba(224, 24, 36, 0.2);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-logo,
       .set-title-heaven .set-title-logo {
         box-shadow: 0 0 22px rgba(217, 165, 46, 0.24);
       }
@@ -1811,6 +1839,7 @@ ui <- fluidPage(
         font-weight: 900;
         line-height: 1;
         text-transform: uppercase;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-main {
@@ -1823,8 +1852,11 @@ ui <- fluidPage(
         letter-spacing: 0;
         text-transform: uppercase;
         text-shadow: 0 0 24px rgba(255, 43, 52, 0.42);
+        transition: color var(--theme-duration) var(--theme-ease),
+          text-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-main,
       .set-title-heaven .set-title-main {
         text-shadow: 0 0 24px rgba(217, 165, 46, 0.46);
       }
@@ -1833,6 +1865,7 @@ ui <- fluidPage(
         color: var(--ink);
         font-size: 24px;
         font-weight: 900;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-oath {
@@ -1841,6 +1874,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 16px;
         line-height: 1.55;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .divine-seals {
@@ -1861,8 +1895,10 @@ ui <- fluidPage(
         border-radius: 8px;
         color: var(--ink);
         background: transparent;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal,
       .set-title-heaven .divine-seal {
         background: transparent;
       }
@@ -1877,8 +1913,11 @@ ui <- fluidPage(
         object-fit: cover;
         background: rgba(6, 1, 1, 0.62);
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.36));
+        transition: background-color var(--theme-duration) var(--theme-ease),
+          filter var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal-image,
       .set-title-heaven .divine-seal-image {
         background: rgba(255, 255, 255, 0.62);
       }
@@ -1936,6 +1975,7 @@ ui <- fluidPage(
         font-size: 11px;
         font-weight: 800;
         line-height: 1.25;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .seal-isis {
@@ -1954,6 +1994,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 14px;
         font-weight: 800;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       body.heaven-theme .set-report-section {
