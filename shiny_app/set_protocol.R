@@ -18,6 +18,7 @@ load_set_protocol_dependencies <- function() {
   root <- find_githound_project_root()
   files <- c(
     "R/ClickHouseConnector.R",
+    "R/MCP-OpenAI.R",
     "R/ETL-Repos.R",
     "R/ETL-Commit.R",
     "R/ETL-Links.R",
@@ -471,9 +472,9 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Первые найденные совпадения по пакетам и версиям. Подробные описания укорочены для читаемости.",
       table = set_prepare_table(
         scan$vulnerabilities,
-        c("repository", "sha", "package_name", "ecosystem", "version", "osv_id", "summary", "severity"),
+        c("repository", "sha", "component_name", "component_version", "matched_ecosystem", "osv_id", "summary", "affected"),
         c("Репозиторий", "Коммит", "Пакет", "Экосистема", "Версия", "OSV ID", "Описание", "Критичность"),
-        limit = 10L,
+        limit = 100L,
         max_chars = 75L
       )
     )
@@ -485,12 +486,22 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Состояние найденных уязвимостей по истории коммитов.",
       table = set_prepare_table(
         scan$vulnerability_lifecycle,
-        c("repository", "osv_id", "status", "introduced_sha", "fixed_sha"),
+        c("repository", "osv_id", "status", "introduced_author", "introduced_sha", "introduced_date", "fixed_author", "fixed_sha", "fixed_date"),
         c("Репозиторий", "OSV ID", "Статус", "Появилась в коммите", "Исправлена в коммите"),
-        limit = 10L,
+        limit = 100L,
         max_chars = 70L
       )
     )
+
+    lifecycle_table <- sections[[length(sections)]]$table
+    if (is.data.frame(lifecycle_table) && ncol(lifecycle_table) >= 9L) {
+      names(lifecycle_table)[seq_len(9L)] <- c(
+        "Репозиторий", "OSV ID", "Статус",
+        "Никнейм пользователя", "Появилась в коммите", "Дата появления",
+        "Кто исправил", "Исправлена в коммите", "Дата исправления"
+      )
+      sections[[length(sections)]]$table <- lifecycle_table
+    }
   }
 
   if (is.data.frame(diagnostics$status_counts) && nrow(diagnostics$status_counts) > 0L) {
@@ -697,6 +708,75 @@ build_set_protocol_report <- function(profile,
     output_dir = if (is.list(analysis)) analysis$output_dir else NA_character_,
     summary_path = if (is.list(analysis)) analysis$summary_path else NA_character_
   )
+}
+
+run_isis_protocol <- function(profile,
+                              conn,
+                              progress = function(value, label = NULL) NULL) {
+  profile <- trimws(as.character(profile %||% ""))
+  if (!nzchar(profile)) {
+    stop("Не указана цель.", call. = FALSE)
+  }
+  if (is.null(conn)) {
+    stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.", call. = FALSE)
+  }
+
+  load_set_protocol_dependencies()
+
+  if (!exists("mcp_chat_with_clickhouse", mode = "function")) {
+    stop("mcp_chat_with_clickhouse() is not loaded.", call. = FALSE)
+  }
+
+  progress(15, "Подготовка запроса ИСИДЫ")
+  result <- mcp_chat_with_clickhouse(
+    question = paste(
+      "Посмотри всю информацию по пользователю",
+      profile,
+      "и сделай психологический портрет пользователя с описанием его привычек, характера работы, отношения к безопасности разрабатываемых продуктов и общего психологического портрета"
+    ),
+    conn = conn,
+    allowed_tables = NULL,
+    max_rows = 5000,
+    max_tool_rounds = 20,
+    verbose_tools = TRUE
+  )
+
+  progress(85, "Формирование отчета ИСИДЫ")
+  final_message <- result$final_message$content %||% ""
+  if (is.list(final_message)) {
+    final_message <- paste(unlist(final_message, use.names = FALSE), collapse = "\n")
+  }
+  final_message <- trimws(as.character(final_message))
+  if (!nzchar(final_message)) {
+    final_message <- "ИСИДА не вернула содержательный ответ."
+  }
+
+  report <- list(
+    profile = profile,
+    generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    overview = data.frame(
+      "Показатель" = c("Цель", "Источник"),
+      "Значение" = c(profile, "MCP + ClickHouse"),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    ),
+    sections = list(
+      list(
+        title = "Психологический портрет (ИСИДА)",
+        text = "Интерпретация ИСИДЫ на основе данных из ClickHouse.",
+        render_markdown = TRUE,
+        markdown = final_message,
+        table = data.frame()
+      )
+    ),
+    plots = character(),
+    vulnerability_scan = list(status = "skipped", message = "not_applicable"),
+    output_dir = NA_character_,
+    summary_path = NA_character_
+  )
+
+  progress(100, "Отчет ИСИДЫ готов")
+  list(profile = profile, report = report, result = result)
 }
 
 run_set_protocol <- function(profile,

@@ -1,0 +1,12 @@
+.git
+.gitignore
+.Rhistory
+.RData
+.Renviron
+.Rlibs
+*.log
+*.tmp
+tmp/
+dist/
+node_modules/
+

@@ -103,16 +103,34 @@ get_user_commits <- function(profile,
   }
   
   resolve_repos_script <- function() {
-    candidate_paths <- c(
+    root_candidates <- c(
+      getwd(),
+      normalizePath(file.path(getwd(), ".."), winslash = "/", mustWork = FALSE),
+      dirname(normalizePath(getwd(), winslash = "/", mustWork = FALSE))
+    )
+    if (exists("find_githound_project_root", mode = "function")) {
+      root_candidates <- c(
+        root_candidates,
+        tryCatch(find_githound_project_root(), error = function(e) NA_character_)
+      )
+    }
+    root_candidates <- unique(root_candidates[!is.na(root_candidates) & nzchar(root_candidates)])
+
+    candidate_paths <- unique(c(
       "ETL-Repos.R",
       file.path("R", "ETL-Repos.R"),
-      "C:/Users/miron/Documents/GitaRiki/R/ETL-Repos.R"
-    )
+      unlist(lapply(root_candidates, function(root) {
+        c(
+          file.path(root, "ETL-Repos.R"),
+          file.path(root, "R", "ETL-Repos.R")
+        )
+      }), use.names = FALSE)
+    ))
     existing_path <- candidate_paths[file.exists(candidate_paths)][1]
     if (is.na(existing_path)) {
       stop("Файл ETL-Repos.R не найден.")
     }
-    existing_path
+    normalizePath(existing_path, winslash = "/", mustWork = FALSE)
   }
   
   repo_owner <- function(repo_full_name) {

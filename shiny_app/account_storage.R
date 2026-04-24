@@ -48,8 +48,9 @@ load_githound_renviron <- function() {
   }
 
   candidates <- unique(normalizePath(candidates, mustWork = FALSE))
-  env_file <- candidates[file.exists(candidates)][[1]]
-  if (!is.null(env_file) && nzchar(env_file)) {
+  existing <- candidates[file.exists(candidates)]
+  env_file <- if (length(existing) > 0L) existing[[1]] else NA_character_
+  if (!is.na(env_file) && nzchar(env_file)) {
     readRenviron(env_file)
   }
 
