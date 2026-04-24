@@ -437,12 +437,20 @@ set_report_screen <- function(report) {
     return(div(class = "home", div(class = "form", h2(class = "section-title", "Отчет еще не готов"))))
   }
 
+  protocol_type <- tolower(report$protocol_type %||% "set")
+  protocol_label <- report$protocol_label %||% if (identical(protocol_type, "isis")) "Исида" else "Сет"
+  switch_button <- if (identical(protocol_type, "set")) {
+    actionButton("run_isis_after_report", "Запустить Исиду", class = "run-button")
+  } else {
+    actionButton("run_set_after_report", "Запустить Сета", class = "run-button")
+  }
+
   div(
     class = "home set-report-page",
     brand_block(),
     div(
       class = "form set-report-form",
-      h2(class = "section-title", paste("Отчет Сета:", report$profile %||% "")),
+      h2(class = "section-title", paste("Отчет", protocol_label, ":", report$profile %||% "")),
       p(class = "account-copy", paste("Собран:", report$generated_at %||% "")),
       set_title_page(report),
       lapply(report$sections, function(section) {
@@ -454,6 +462,7 @@ set_report_screen <- function(report) {
         )
       }),
       set_plots_ui(report),
+      switch_button,
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
     )
   )
@@ -461,6 +470,10 @@ set_report_screen <- function(report) {
 
 archive_status_label <- function(status) {
   switch(status %||% "active", active = "активен", archived = "заархивировано", deleted = "удален", status)
+}
+
+archive_protocol_label <- function(protocol_type) {
+  switch(tolower(protocol_type %||% "set"), set = "Сет", isis = "Исида", protocol_type %||% "—")
 }
 
 pdf_theme <- function(mode = "hell") {
@@ -721,11 +734,12 @@ write_single_report_pdf <- function(record, file) {
 }
 
 safe_report_filename <- function(record) {
+  protocol <- tolower(record$protocol_type %||% record$report$protocol_type %||% "report")
   target <- gsub("[^[:alnum:]_-]+", "_", record$target %||% "report")
   target <- gsub("_+", "_", target)
   target <- trimws(target, whitespace = "_")
   if (!nzchar(target)) target <- "report"
-  paste0("githound_", target, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
+  paste0("githound_", protocol, "_", target, "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf")
 }
 
 write_reports_zip <- function(records, file) {
@@ -781,6 +795,7 @@ archive_table_ui <- function(records, page = 1L, page_size = 15L) {
           tags$tr(
             tags$th(class = "archive-check-cell", ""),
             tags$th("Цель"),
+            tags$th("Протокол"),
             tags$th("Статус"),
             tags$th("Создан"),
             tags$th("Хранится до"),
@@ -792,6 +807,7 @@ archive_table_ui <- function(records, page = 1L, page_size = 15L) {
             tags$tr(
               tags$td(class = "archive-check-cell", tags$input(type = "checkbox", class = "archive-row-select", value = item$id %||% "")),
               tags$td(item$target %||% ""),
+              tags$td(item$protocol_label %||% archive_protocol_label(item$protocol_type %||% "")),
               tags$td(archive_status_label(item$status %||% "active")),
               tags$td(item$created_at_label %||% ""),
               tags$td(item$expires_at_label %||% ""),
@@ -889,10 +905,8 @@ ui <- fluidPage(
         var data = getRememberedLogin();
         if (!data) return;
         setInputValueIfPresent('login_email', data.email || '');
-        setInputValueIfPresent('login_password', data.password || '');
         if (window.Shiny) {
           Shiny.setInputValue('login_email', data.email || '', {priority: 'event'});
-          Shiny.setInputValue('login_password', data.password || '', {priority: 'event'});
         }
         if ($('#remember_me').length) {
           $('#remember_me').prop('checked', true).trigger('change');
@@ -907,7 +921,6 @@ ui <- fluidPage(
         if (remember) {
           var payload = JSON.stringify({
             email: $('#login_email').val() || '',
-            password: $('#login_password').val() || '',
             expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
           });
           window.localStorage.setItem('githound_login_memory', payload);
@@ -934,7 +947,6 @@ ui <- fluidPage(
         if (data.remember) {
           var payload = JSON.stringify({
             email: data.email || '',
-            password: data.password || '',
             expiresAt: Date.now() + 14 * 24 * 60 * 60 * 1000
           });
           window.localStorage.setItem('githound_login_memory', payload);
@@ -2650,6 +2662,119 @@ server <- function(input, output, session) {
     github_token = ""
   )
 
+  launch_protocol <- function(protocol_type, target = trimws(analysis_target() %||% "")) {
+    target <- trimws(target %||% "")
+    protocol_type <- tolower(protocol_type %||% "")
+
+    if (!nzchar(target)) {
+      notify_user("Не указана цель.", type = "error", duration = 6)
+      current_page("analysis")
+      return(invisible(FALSE))
+    }
+
+    if (identical(protocol_type, "set")) {
+      token <- trimws(account$github_token %||% "")
+      if (!nzchar(token)) {
+        notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
+        current_page("account")
+        return(invisible(FALSE))
+      }
+    }
+
+    analysis_target(target)
+    set_report(NULL)
+    launch_theme <- theme_mode()
+    load_user_archive()
+    archive_same_target(target)
+    current_page("set_loading")
+
+    if (identical(protocol_type, "isis")) {
+      set_progress$value <- 0
+      set_progress$label <- "Запуск протокола Исиды"
+      try(session$flushReact(), silent = TRUE)
+      session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
+      progress_label <- "Запуск протокола Исиды"
+
+      run_job <- function() {
+        tryCatch({
+          result <- run_isis_protocol(
+            profile = target,
+            conn = conn,
+            progress = function(value, label = NULL) {
+              set_progress$value <- value
+              if (!is.null(label) && nzchar(label)) {
+                progress_label <<- label
+                set_progress$label <- label
+              }
+              session$sendCustomMessage("setSetProgress", list(value = value, label = progress_label))
+              try(session$flushReact(), silent = TRUE)
+            }
+          )
+
+          report <- result$report
+          report$theme <- launch_theme
+          report$view_theme <- launch_theme
+          set_report(report)
+          add_report_to_archive(report, target)
+          current_page("set_report")
+        }, error = function(e) {
+          set_progress$value <- 0
+          set_progress$label <- "Протокол остановлен"
+          session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
+          notify_user(conditionMessage(e), type = "error", duration = 10)
+          current_page("protocol")
+        })
+      }
+    } else {
+      token <- trimws(account$github_token %||% "")
+      set_progress$value <- 0
+      set_progress$label <- "Запуск протокола Сет"
+      try(session$flushReact(), silent = TRUE)
+      session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Сет"))
+      progress_label <- "Запуск протокола Сет"
+
+      run_job <- function() {
+        tryCatch({
+          result <- run_set_protocol(
+            profile = target,
+            token = token,
+            conn = conn,
+            progress = function(value, label = NULL) {
+              set_progress$value <- value
+              if (!is.null(label) && nzchar(label)) {
+                progress_label <<- label
+                set_progress$label <- label
+              }
+              session$sendCustomMessage("setSetProgress", list(value = value, label = progress_label))
+              try(session$flushReact(), silent = TRUE)
+            }
+          )
+
+          report <- result$report
+          report$theme <- launch_theme
+          report$view_theme <- launch_theme
+          set_report(report)
+          add_report_to_archive(report, target)
+          current_page("set_report")
+        }, error = function(e) {
+          set_progress$value <- 0
+          set_progress$label <- "Протокол остановлен"
+          session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
+          notify_user(conditionMessage(e), type = "error", duration = 10)
+          current_page("protocol")
+        })
+      }
+    }
+
+    if (requireNamespace("later", quietly = TRUE)) {
+      later::later(run_job, delay = 0.2)
+    } else {
+      run_job()
+    }
+
+    invisible(TRUE)
+  }
+
   ensure_report_archive_table <- function() {
     sql <- paste0(
       "CREATE TABLE IF NOT EXISTS ",
@@ -2693,6 +2818,7 @@ server <- function(input, output, session) {
     list(
       id = row$report_id[[1]],
       target = row$target[[1]],
+      protocol_type = report$protocol_type %||% "set",
       status = row$status[[1]],
       created_at = created_at,
       expires_at = expires_at,
@@ -2700,6 +2826,7 @@ server <- function(input, output, session) {
       expires_at_label = archive_time_label(expires_at),
       archived_at = if (nzchar(row$archived_at[[1]])) as.POSIXct(row$archived_at[[1]], tz = "UTC") else NULL,
       theme = report_theme_value(report, fallback = "hell"),
+      protocol_label = report$protocol_label %||% archive_protocol_label(report$protocol_type %||% "set"),
       report = report
     )
   }
@@ -2770,17 +2897,26 @@ server <- function(input, output, session) {
   archive_same_target <- function(target) {
     records <- refresh_archive_status()
     normalized_target <- tolower(trimws(target %||% ""))
-    changed <- FALSE
-    updated <- lapply(records, function(item) {
-      if (identical(item$status %||% "active", "active") &&
-          identical(tolower(trimws(item$target %||% "")), normalized_target)) {
-        item$status <- "archived"
-        item$archived_at <- Sys.time()
-        try(persist_archive_status(item), silent = TRUE)
-        changed <<- TRUE
-      }
-      item
-    })
+    matching_idx <- which(vapply(records, function(item) {
+      identical(item$status %||% "active", "active") &&
+        identical(tolower(trimws(item$target %||% "")), normalized_target)
+    }, logical(1)))
+
+    if (length(matching_idx) == 0L) {
+      return(invisible(records))
+    }
+
+    created_times <- vapply(records[matching_idx], function(item) {
+      as.numeric(item$created_at %||% Sys.time())
+    }, numeric(1))
+    oldest_idx <- matching_idx[[which.min(created_times)]]
+
+    updated <- records
+    updated[[oldest_idx]]$status <- "archived"
+    updated[[oldest_idx]]$archived_at <- Sys.time()
+    try(persist_archive_status(updated[[oldest_idx]]), silent = TRUE)
+
+    changed <- TRUE
     if (isTRUE(changed)) {
       report_archive(updated)
     }
@@ -2789,12 +2925,16 @@ server <- function(input, output, session) {
 
   add_report_to_archive <- function(report, target) {
     report$theme <- report_theme_value(report, fallback = theme_mode())
+    report$protocol_type <- tolower(report$protocol_type %||% "set")
+    report$protocol_label <- report$protocol_label %||% archive_protocol_label(report$protocol_type)
     records <- archive_same_target(target)
     created_at <- Sys.time()
     expires_at <- created_at + 7 * 24 * 60 * 60
     item <- list(
       id = paste0(format(created_at, "%Y%m%d%H%M%S"), "-", sample(1000:9999, 1)),
       target = target,
+      protocol_type = report$protocol_type,
+      protocol_label = report$protocol_label,
       theme = report$theme,
       status = "active",
       created_at = created_at,
@@ -3019,8 +3159,7 @@ server <- function(input, output, session) {
         "rememberLogin",
         list(
           remember = isTRUE(input$remember_me),
-          email = input$login_email %||% "",
-          password = input$login_password %||% ""
+          email = input$login_email %||% ""
         )
       )
       current_page("analysis")
@@ -3047,130 +3186,21 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$run_isis, {
-    target <- trimws(analysis_target() %||% "")
-
-    if (!nzchar(target)) {
-      notify_user("Не указана цель.", type = "error", duration = 6)
-      current_page("analysis")
-      return()
-    }
-
-    set_report(NULL)
-    set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Исиды"
-    launch_theme <- theme_mode()
-    archive_same_target(target)
-    current_page("set_loading")
-    try(session$flushReact(), silent = TRUE)
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
-
-    progress_label <- "Запуск протокола Исиды"
-    run_isis_job <- function() {
-      tryCatch({
-        result <- run_isis_protocol(
-          profile = target,
-          conn = conn,
-          progress = function(value, label = NULL) {
-            set_progress$value <- value
-            if (!is.null(label) && nzchar(label)) {
-              progress_label <<- label
-    set_progress$label <- "Запуск протокола Исиды"
-            }
-            session$sendCustomMessage(
-              "setSetProgress",
-              list(value = value, label = progress_label)
-            )
-            try(session$flushReact(), silent = TRUE)
-          }
-        )
-
-        report <- result$report
-        report$theme <- launch_theme
-        set_report(report)
-        add_report_to_archive(report, target)
-        current_page("set_report")
-      }, error = function(e) {
-        set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Исиды"
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Исиды"))
-        notify_user(conditionMessage(e), type = "error", duration = 10)
-        current_page("protocol")
-      })
-    }
-
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_isis_job, delay = 0.2)
-    } else {
-      run_isis_job()
-    }
+    launch_protocol("isis")
   })
 
   observeEvent(input$run_set, {
-    target <- trimws(analysis_target() %||% "")
-    token <- trimws(account$github_token %||% "")
+    launch_protocol("set")
+  })
 
-    if (!nzchar(target)) {
-      notify_user("Не указана цель.", type = "error", duration = 6)
-      current_page("analysis")
-      return()
-    }
-    if (!nzchar(token)) {
-      notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
-      current_page("account")
-      return()
-    }
+  observeEvent(input$run_isis_after_report, {
+    req(is.list(set_report()))
+    launch_protocol("isis", target = set_report()$profile %||% analysis_target())
+  })
 
-    set_report(NULL)
-    set_progress$value <- 0
-    set_progress$label <- "Запуск протокола Сет"
-    launch_theme <- theme_mode()
-    load_user_archive()
-    archive_same_target(target)
-    current_page("set_loading")
-    try(session$flushReact(), silent = TRUE)
-    session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Сет"))
-
-    progress_label <- "Запуск протокола Сет"
-    run_set_job <- function() {
-      tryCatch({
-        result <- run_set_protocol(
-          profile = target,
-          token = token,
-          conn = conn,
-          progress = function(value, label = NULL) {
-            set_progress$value <- value
-            if (!is.null(label) && nzchar(label)) {
-              progress_label <<- label
-              set_progress$label <- label
-            }
-            session$sendCustomMessage(
-              "setSetProgress",
-              list(value = value, label = progress_label)
-            )
-            try(session$flushReact(), silent = TRUE)
-          }
-        )
-
-        report <- result$report
-        report$theme <- launch_theme
-        report$view_theme <- launch_theme
-        set_report(report)
-        add_report_to_archive(report, target)
-        current_page("set_report")
-      }, error = function(e) {
-        set_progress$value <- 0
-        set_progress$label <- "Протокол остановлен"
-        session$sendCustomMessage("setSetProgress", list(value = 0, label = "Протокол остановлен"))
-        notify_user(conditionMessage(e), type = "error", duration = 10)
-        current_page("protocol")
-      })
-    }
-
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_set_job, delay = 0.2)
-    } else {
-      run_set_job()
-    }
+  observeEvent(input$run_set_after_report, {
+    req(is.list(set_report()))
+    launch_protocol("set", target = set_report()$profile %||% analysis_target())
   })
 
   observeEvent(input$save_account, {

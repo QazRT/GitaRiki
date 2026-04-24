@@ -700,6 +700,8 @@ build_set_protocol_report <- function(profile,
 
   list(
     profile = profile,
+    protocol_type = "set",
+    protocol_label = "Сет",
     generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
     overview = overview,
     sections = sections,
@@ -753,6 +755,8 @@ run_isis_protocol <- function(profile,
 
   report <- list(
     profile = profile,
+    protocol_type = "isis",
+    protocol_label = "Исида",
     generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
     overview = data.frame(
       "Показатель" = c("Цель", "Источник"),
