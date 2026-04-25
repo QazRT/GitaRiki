@@ -202,6 +202,8 @@ set_find_osv_db <- function(root) {
 
 set_find_syft <- function(root) {
   candidates <- unique(c(
+    file.path(root, "syft"),
+    file.path(getwd(), "syft"),
     file.path(root, "syft.exe"),
     file.path(getwd(), "syft.exe"),
     unname(Sys.which("syft")),
@@ -255,68 +257,6 @@ set_read_osv_config_file <- function() {
   list()
 }
 
-set_load_osv_backend <- function(root) {
-  config_file <- set_read_osv_config_file()
-  mongo_url <- Sys.getenv("OSV_MONGO_URL", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGO_URL", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGODB_URI", "")
-  if (!nzchar(mongo_url)) mongo_url <- Sys.getenv("MONGO_URI", "")
-  if (!nzchar(mongo_url)) mongo_url <- config_file$mongo_url %||% ""
-  if (!nzchar(mongo_url)) mongo_url <- "mongodb://localhost:27017"
-
-  mongo_db <- Sys.getenv("OSV_MONGO_DB", "")
-  if (!nzchar(mongo_db)) mongo_db <- config_file$db_name %||% "osv"
-
-  mongo_collection <- Sys.getenv("OSV_MONGO_COLLECTION", "")
-  if (!nzchar(mongo_collection)) mongo_collection <- config_file$collection %||% "vulns"
-  mongo_error <- NULL
-
-  if (!requireNamespace("mongolite", quietly = TRUE)) {
-    mongo_error <- "Package 'mongolite' is required for MongoDB backend. Установите пакет mongolite в R."
-  } else if (exists("load_osv_mongo_database", mode = "function") && nzchar(mongo_url)) {
-    mongo_result <- tryCatch({
-      list(
-        db = load_osv_mongo_database(
-          mongo_url = mongo_url,
-          db_name = mongo_db,
-          collection = mongo_collection,
-          validate = TRUE
-        ),
-        message = paste0("База OSV подключена через MongoDB: ", mongo_db, ".", mongo_collection)
-      )
-    }, error = function(e) {
-      list(error = conditionMessage(e))
-    })
-
-    if (is.list(mongo_result) && !is.null(mongo_result$db)) {
-      return(mongo_result)
-    }
-    mongo_error <- mongo_result$error
-  }
-
-  osv_dir <- set_find_osv_db(root)
-  if (nzchar(osv_dir) && !is.na(osv_dir)) {
-    local_result <- tryCatch({
-      list(
-        db = load_osv_database(osv_dir, load_index = TRUE),
-        message = "База OSV подключена из локальной папки osv_db."
-      )
-    }, error = function(e) {
-      list(error = conditionMessage(e))
-    })
-
-    if (is.list(local_result) && !is.null(local_result$db)) {
-      return(local_result)
-    }
-  }
-
-  list(
-    db = NULL,
-    message = "База OSV не подключена. Проверьте MongoDB OSV или локальную папку osv_db.",
-    error = mongo_error
-  )
-}
-
 run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = function(value, label = NULL) NULL) {
   root <- find_githound_project_root()
   syft_path <- set_find_syft(root)
@@ -329,38 +269,31 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
   }
 
   progress(76, "Подключение базы уязвимостей OSV")
-  osv_backend <- set_load_osv_backend(root)
-  if (is.null(osv_backend$db)) {
-    message <- osv_backend$message
-    if (nzchar(osv_backend$error %||% "")) {
-      message <- paste(message, osv_backend$error)
-    }
-    return(list(status = "connection_error", message = message))
-  }
+  
+  mongo_url <- Sys.getenv("OSV_MONGO_URL", "")
+  mongo_db <- Sys.getenv("OSV_MONGO_DB", "")
+  mongo_coll <- Sys.getenv("OSV_MONGO_COLLECTION", "")
+  osv_db <- load_osv_mongo_database(
+    mongo_url = mongo_url,
+    db_name = mongo_db,
+    collection = mongo_coll,
+    validate = FALSE
+  )
 
   tryCatch({
     progress(82, "Поиск уязвимостей зависимостей")
     scan_args <- list(
       profile = profile,
-      osv_db = osv_backend$db,
-      token = token,
-      syft_path = syft_path,
-      include_uncertain = TRUE,
-      keep_snapshots = FALSE,
-      force_scan = FALSE,
+      osv_db = osv_db,
       parallel_strategy = "auto",
       auto_workers = 16L,
-      repo_progress = TRUE,
-      repo_progress_every = 10L,
-      repo_progress_details = FALSE,
-      syft_timeout_sec = 0L,
-      commit_info_parallel = TRUE,
-      commit_info_workers = 4L,
+      syft_path = syft_path,
+      token = token,
       conn = conn,
       clickhouse_incremental = TRUE,
-      incremental_compare_commits_by_sha = TRUE,
-      debug = TRUE,
-      debug_repo_every = 10L
+      incremental_compare_commits_by_sha = TRUE
+      # debug = TRUE,
+      # debug_repo_every = 10L
     )
     supported_args <- names(formals(analyze_user_commits_with_syft_osv))
     scan <- do.call(
@@ -374,7 +307,7 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
       list()
     }
 
-    list(status = "ok", message = paste("Поиск уязвимостей выполнен.", osv_backend$message), scan = scan, diagnostics = diagnostics)
+    list(status = "ok", message = paste("Поиск уязвимостей выполнен."), scan = scan, diagnostics = diagnostics)
   }, error = function(e) {
     list(status = "error", message = conditionMessage(e))
   })
@@ -394,6 +327,25 @@ set_collect_plot_paths <- function(analysis) {
 
   candidates <- candidates[file.exists(candidates)]
   unique(candidates)
+}
+
+set_clickhouse_tables_by_mask <- function(conn, mask = "github_*") {
+  tables <- query_clickhouse(
+    conn,
+    paste(
+      "SELECT name",
+      "FROM system.tables",
+      "WHERE database = currentDatabase()",
+      "ORDER BY name"
+    )
+  )
+  if (!is.data.frame(tables) || !"name" %in% names(tables) || nrow(tables) == 0L) {
+    return(character())
+  }
+
+  names <- as.character(tables$name)
+  names <- names[!is.na(names) & nzchar(names)]
+  names[grepl(utils::glob2rx(mask), names)]
 }
 
 set_plot_label <- function(path) {
@@ -472,8 +424,8 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Первые найденные совпадения по пакетам и версиям. Подробные описания укорочены для читаемости.",
       table = set_prepare_table(
         scan$vulnerabilities,
-        c("repository", "sha", "component_name", "component_version", "matched_ecosystem", "osv_id", "summary", "affected"),
-        c("Репозиторий", "Коммит", "Пакет", "Экосистема", "Версия", "OSV ID", "Описание", "Критичность"),
+        c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "summary"),
+        c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "Описание"),
         limit = 100L,
         max_chars = 75L
       )
@@ -500,6 +452,9 @@ set_vulnerability_sections <- function(vulnerability_scan) {
         "Никнейм пользователя", "Появилась в коммите", "Дата появления",
         "Кто исправил", "Исправлена в коммите", "Дата исправления"
       )
+      introduced_commits <- lifecycle_table[[5L]]
+      lifecycle_table <- lifecycle_table[, -c(5L, 8L), drop = FALSE]
+      attr(lifecycle_table, "copy_commit_at_date") <- list(date_col = 5L, commits = introduced_commits)
       sections[[length(sections)]]$table <- lifecycle_table
     }
   }
@@ -729,7 +684,16 @@ run_isis_protocol <- function(profile,
     stop("mcp_chat_with_clickhouse() is not loaded.", call. = FALSE)
   }
 
-  progress(15, "Подготовка запроса ИСИДЫ")
+  progress(0, "Подготовка запроса ИСИДЫ")
+  isis_table_mask <- "github_*"
+  allowed_tables <- set_clickhouse_tables_by_mask(conn, mask = isis_table_mask)
+  if (length(allowed_tables) == 0L) {
+    stop(
+      paste0("ClickHouse tables not found by mask ", isis_table_mask, "."),
+      call. = FALSE
+    )
+  }
+
   result <- mcp_chat_with_clickhouse(
     question = paste(
       "Посмотри всю информацию по пользователю",
@@ -737,9 +701,10 @@ run_isis_protocol <- function(profile,
       "и сделай психологический портрет пользователя с описанием его привычек, характера работы, отношения к безопасности разрабатываемых продуктов и общего психологического портрета"
     ),
     conn = conn,
-    allowed_tables = NULL,
+    allowed_tables = allowed_tables,
     max_rows = 5000,
     max_tool_rounds = 20,
+    progressbar = progress,
     verbose_tools = TRUE
   )
 

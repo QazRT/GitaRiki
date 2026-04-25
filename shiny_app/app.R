@@ -285,7 +285,72 @@ set_table_ui <- function(df) {
     return(div(class = "set-empty", "Нет данных для этого раздела."))
   }
 
+  copy_commit_at_date <- attr(df, "copy_commit_at_date", exact = TRUE)
+  if (is.null(copy_commit_at_date) &&
+      ncol(df) >= 9L &&
+      "OSV ID" %in% names(df) &&
+      any(grepl("[[:xdigit:]]{7,}", as.character(df[[5L]])), na.rm = TRUE)) {
+    copy_commit_at_date <- list(date_col = 6L, commit_col = 5L)
+  }
+  if (is.list(copy_commit_at_date) &&
+      !is.null(copy_commit_at_date$commit_col) &&
+      identical(copy_commit_at_date$date_col, 6L) &&
+      identical(copy_commit_at_date$commit_col, 5L) &&
+      ncol(df) >= 9L) {
+    introduced_commits <- df[[5L]]
+    df <- df[, -c(5L, 8L), drop = FALSE]
+    copy_commit_at_date <- list(date_col = 5L, commits = introduced_commits)
+  }
   df <- utils::head(df, 12L)
+  return(div(
+    class = "set-report-table-wrap",
+    tags$table(
+      class = "set-report-table",
+      tags$thead(
+        tags$tr(lapply(names(df), function(name) tags$th(name)))
+      ),
+      tags$tbody(
+        lapply(seq_len(nrow(df)), function(i) {
+          tags$tr(lapply(seq_along(df), function(j) {
+            value <- as.character(df[[j]][[i]])
+            display_value <- value
+            if (is.na(display_value) || !nzchar(display_value)) {
+              display_value <- "\u2014"
+            }
+            if (is.list(copy_commit_at_date) &&
+                identical(j, copy_commit_at_date$date_col)) {
+              commit <- if (!is.null(copy_commit_at_date$commits) &&
+                            length(copy_commit_at_date$commits) >= i) {
+                as.character(copy_commit_at_date$commits[[i]])
+              } else if (!is.null(copy_commit_at_date$commit_col) &&
+                         copy_commit_at_date$commit_col %in% seq_along(df)) {
+                as.character(df[[copy_commit_at_date$commit_col]][[i]])
+              } else {
+                ""
+              }
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = commit,
+                      "👁"
+                    )
+                  )
+                ))
+              }
+            }
+            tags$td(display_value)
+          }))
+        })
+      )
+    )
+  ))
   div(
     class = "set-report-table-wrap",
     tags$table(
@@ -295,8 +360,30 @@ set_table_ui <- function(df) {
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
-          tags$tr(lapply(df[i, , drop = FALSE], function(value) {
-            value <- as.character(value[[1]])
+          tags$tr(lapply(seq_along(df), function(j) {
+            value <- as.character(df[[j]][[i]])
+            display_value <- if (is.na(value) || !nzchar(value)) "вЂ”" else value
+            if (is.list(copy_commit_at_date) &&
+                identical(j, copy_commit_at_date$date_col) &&
+                copy_commit_at_date$commit_col %in% seq_along(df)) {
+              commit <- as.character(df[[copy_commit_at_date$commit_col]][[i]])
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = "Copy commit",
+                      "Copy"
+                    )
+                  )
+                ))
+              }
+            }
             tags$td(if (is.na(value) || !nzchar(value)) "—" else value)
           }))
         })
@@ -409,7 +496,7 @@ set_title_page <- function(report) {
   }
 
   div(
-    class = paste("set-title-page", if (is_heaven) "set-title-heaven" else "set-title-hell"),
+    class = "set-title-page",
     div(
       class = "set-title-brand",
       img(
@@ -979,6 +1066,41 @@ ui <- fluidPage(
         if (data.label) {
           $('#set_progress_label').text(data.label);
         }
+      });
+
+      function copyTextToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function(resolve, reject) {
+          var area = document.createElement('textarea');
+          area.value = text;
+          area.setAttribute('readonly', '');
+          area.style.position = 'fixed';
+          area.style.left = '-9999px';
+          document.body.appendChild(area);
+          area.select();
+          try {
+            document.execCommand('copy') ? resolve() : reject(new Error('copy failed'));
+          } catch (error) {
+            reject(error);
+          } finally {
+            document.body.removeChild(area);
+          }
+        });
+      }
+
+      $(document).on('click', '.copy-commit-button', function() {
+        var button = $(this);
+        var commit = String(button.data('commit') || '');
+        if (!commit) return;
+        copyTextToClipboard(commit).then(function() {
+          var previous = button.text();
+          button.addClass('copied').text('OK');
+          window.setTimeout(function() {
+            button.removeClass('copied').text(previous);
+          }, 900);
+        });
       });
 
       $(document).on('click', '#theme_hell', function() {
@@ -1766,6 +1888,9 @@ ui <- fluidPage(
           linear-gradient(180deg, rgba(36, 2, 4, 0.96), rgba(8, 0, 1, 0.98));
         box-shadow: inset 0 0 80px rgba(224, 24, 36, 0.18),
           0 20px 50px rgba(0, 0, 0, 0.26);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-page::before {
@@ -1775,14 +1900,36 @@ ui <- fluidPage(
         border: 1px solid rgba(255, 211, 90, 0.42);
         border-radius: 8px;
         pointer-events: none;
+        z-index: 2;
+        transition: border-color var(--theme-duration) var(--theme-ease);
       }
 
-      .set-title-heaven {
+      .set-title-page::after {
+        content: '';
+        position: absolute;
+        inset: 0;
         background:
           radial-gradient(circle at 50% 16%, rgba(255, 235, 160, 0.72), transparent 28%),
           linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 250, 255, 0.96));
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-title-page > * {
+        position: relative;
+        z-index: 1;
+      }
+
+      body.heaven-theme .set-title-page,
+      .set-title-heaven {
         box-shadow: inset 0 0 80px rgba(217, 165, 46, 0.16),
           0 20px 50px rgba(120, 154, 174, 0.2);
+      }
+
+      body.heaven-theme .set-title-page::after,
+      .set-title-heaven::after {
+        opacity: 1;
       }
 
       .set-title-brand {
@@ -1798,8 +1945,11 @@ ui <- fluidPage(
         border: 1px solid var(--line);
         border-radius: 8px;
         box-shadow: 0 0 22px rgba(224, 24, 36, 0.2);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-logo,
       .set-title-heaven .set-title-logo {
         box-shadow: 0 0 22px rgba(217, 165, 46, 0.24);
       }
@@ -1811,6 +1961,7 @@ ui <- fluidPage(
         font-weight: 900;
         line-height: 1;
         text-transform: uppercase;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-main {
@@ -1823,8 +1974,11 @@ ui <- fluidPage(
         letter-spacing: 0;
         text-transform: uppercase;
         text-shadow: 0 0 24px rgba(255, 43, 52, 0.42);
+        transition: color var(--theme-duration) var(--theme-ease),
+          text-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .set-title-main,
       .set-title-heaven .set-title-main {
         text-shadow: 0 0 24px rgba(217, 165, 46, 0.46);
       }
@@ -1833,6 +1987,7 @@ ui <- fluidPage(
         color: var(--ink);
         font-size: 24px;
         font-weight: 900;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .set-title-oath {
@@ -1841,6 +1996,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 16px;
         line-height: 1.55;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .divine-seals {
@@ -1861,8 +2017,10 @@ ui <- fluidPage(
         border-radius: 8px;
         color: var(--ink);
         background: transparent;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal,
       .set-title-heaven .divine-seal {
         background: transparent;
       }
@@ -1877,8 +2035,11 @@ ui <- fluidPage(
         object-fit: cover;
         background: rgba(6, 1, 1, 0.62);
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.36));
+        transition: background-color var(--theme-duration) var(--theme-ease),
+          filter var(--theme-duration) var(--theme-ease);
       }
 
+      body.heaven-theme .divine-seal-image,
       .set-title-heaven .divine-seal-image {
         background: rgba(255, 255, 255, 0.62);
       }
@@ -1936,6 +2097,7 @@ ui <- fluidPage(
         font-size: 11px;
         font-weight: 800;
         line-height: 1.25;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       .seal-isis {
@@ -1954,6 +2116,7 @@ ui <- fluidPage(
         color: var(--muted);
         font-size: 14px;
         font-weight: 800;
+        transition: color var(--theme-duration) var(--theme-ease);
       }
 
       body.heaven-theme .set-report-section {
@@ -2010,6 +2173,72 @@ ui <- fluidPage(
         color: var(--accent);
         font-weight: 900;
         white-space: normal;
+      }
+
+      .set-markdown table {
+        width: 100%;
+        margin: 10px 0;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+
+      .set-markdown th,
+      .set-markdown td {
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        color: var(--ink);
+        vertical-align: top;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-markdown th {
+        color: var(--accent);
+        font-weight: 900;
+      }
+
+      .commit-date-cell {
+        display: block;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
+      .copy-commit-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 22px;
+        margin-left: 4px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1;
+        cursor: pointer;
+        vertical-align: middle;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
+      }
+
+      .copy-commit-button:hover,
+      .copy-commit-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .copy-commit-button.copied {
+        color: var(--ink);
+        background: rgba(120, 214, 166, 0.16);
+      }
+
+      body.heaven-theme .copy-commit-button {
+        background: rgba(211, 29, 29, 0.07);
       }
 
       .set-plot-grid {
@@ -2681,10 +2910,156 @@ server <- function(input, output, session) {
     avatar_id = "egypt_1",
     github_token = ""
   )
+  protocol_queue <- reactiveVal(list())
+  protocol_active_job <- reactiveVal(NULL)
+  protocol_worker <- reactiveVal(NULL)
+  protocol_job_dir <- file.path(tempdir(), "githound_protocol_jobs")
+  dir.create(protocol_job_dir, recursive = TRUE, showWarnings = FALSE)
+
+  protocol_new_job_id <- function() {
+    paste0(
+      format(Sys.time(), "%Y%m%d%H%M%OS3"),
+      "_",
+      paste(sample(c(letters, 0:9), 8L, replace = TRUE), collapse = "")
+    )
+  }
+
+  protocol_progress_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, ".rds"))
+  }
+
+  protocol_input_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, "_input.rds"))
+  }
+
+  protocol_result_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, "_result.rds"))
+  }
+
+  protocol_log_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, ".log"))
+  }
+
+  protocol_write_progress <- function(path, value = 0, label = NULL) {
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    saveRDS(list(value = value, label = label, updated_at = Sys.time()), path)
+  }
+
+  protocol_read_progress <- function(path) {
+    if (!file.exists(path)) return(NULL)
+    tryCatch(readRDS(path), error = function(e) NULL)
+  }
+
+  update_protocol_progress <- function(value, label = NULL) {
+    value <- max(0, min(100, as.integer(value %||% 0)))
+    if (is.null(label) || !nzchar(label)) {
+      label <- set_progress$label %||% ""
+    }
+    set_progress$value <- value
+    set_progress$label <- label
+    session$sendCustomMessage("setSetProgress", list(value = value, label = label))
+  }
+
+  sync_protocol_progress <- function(job) {
+    progress <- protocol_read_progress(job$progress_path)
+    if (is.list(progress)) {
+      update_protocol_progress(progress$value %||% 0, progress$label %||% job$label)
+    }
+  }
+
+  complete_protocol_job <- function(job, result) {
+    sync_protocol_progress(job)
+    protocol_active_job(NULL)
+    protocol_worker(NULL)
+    try(unlink(c(job$progress_path, job$input_path)), silent = TRUE)
+
+    if (is.list(result) && isTRUE(result$ok)) {
+      job$on_success(result$result)
+    } else {
+      job$on_error(result$error %||% "Protocol job failed.")
+    }
+    start_next_protocol_job()
+  }
+
+  poll_protocol_job <- function() {
+    job <- isolate(protocol_active_job())
+    if (is.null(job)) return(invisible(FALSE))
+
+    sync_protocol_progress(job)
+    if (!file.exists(job$result_path)) {
+      later::later(poll_protocol_job, delay = 0.5)
+      return(invisible(TRUE))
+    }
+
+    result <- tryCatch(
+      readRDS(job$result_path),
+      error = function(e) list(ok = FALSE, error = conditionMessage(e))
+    )
+    complete_protocol_job(job, result)
+    invisible(TRUE)
+  }
+
+  start_next_protocol_job <- function() {
+    if (!is.null(isolate(protocol_active_job()))) return(invisible(FALSE))
+
+    queue <- isolate(protocol_queue())
+    if (length(queue) == 0L) return(invisible(FALSE))
+
+    job <- queue[[1L]]
+    protocol_queue(queue[-1L])
+    protocol_active_job(job)
+    analysis_target(job$target)
+    current_page("set_loading")
+    update_protocol_progress(0, job$label)
+    protocol_write_progress(job$progress_path, 0, job$label)
+
+    worker_script <- file.path(app_dir, "protocol_worker.R")
+    rscript <- file.path(R.home("bin"), if (identical(.Platform$OS.type, "windows")) "Rscript.exe" else "Rscript")
+    if (!file.exists(rscript)) {
+      rscript <- "Rscript"
+    }
+
+    try(unlink(job$result_path), silent = TRUE)
+    saveRDS(job$spec, job$input_path)
+    started <- tryCatch({
+      system2(
+        rscript,
+        args = c(worker_script, job$input_path),
+        stdout = job$log_path,
+        stderr = job$log_path,
+        wait = FALSE
+      )
+      TRUE
+    }, error = function(e) {
+      complete_protocol_job(job, list(ok = FALSE, error = conditionMessage(e)))
+      FALSE
+    })
+
+    if (isTRUE(started)) {
+      protocol_worker(list(started_at = Sys.time(), log_path = job$log_path))
+      later::later(poll_protocol_job, delay = 0.5)
+    }
+
+    invisible(TRUE)
+  }
+
+  enqueue_protocol_job <- function(job) {
+    queue <- isolate(protocol_queue())
+    protocol_queue(c(queue, list(job)))
+    start_next_protocol_job()
+    invisible(TRUE)
+  }
+
+  session$onSessionEnded(function() {
+    protocol_queue(list())
+    protocol_active_job(NULL)
+    protocol_worker(NULL)
+  })
 
   launch_protocol <- function(protocol_type, target = trimws(analysis_target() %||% "")) {
     target <- trimws(target %||% "")
     protocol_type <- tolower(protocol_type %||% "")
+    token <- trimws(account$github_token %||% "")
 
     if (!nzchar(target)) {
       notify_user("Не указана цель.", type = "error", duration = 6)
@@ -2693,7 +3068,6 @@ server <- function(input, output, session) {
     }
 
     if (identical(protocol_type, "set")) {
-      token <- trimws(account$github_token %||% "")
       if (!nzchar(token)) {
         notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
         current_page("account")
@@ -2786,11 +3160,44 @@ server <- function(input, output, session) {
       }
     }
 
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_job, delay = 0.2)
-    } else {
-      run_job()
-    }
+    job_id <- protocol_new_job_id()
+    job <- list(
+      id = job_id,
+      target = target,
+      protocol_type = protocol_type,
+      label = progress_label,
+      progress_path = protocol_progress_path(job_id),
+      input_path = protocol_input_path(job_id),
+      result_path = protocol_result_path(job_id),
+      log_path = protocol_log_path(job_id),
+      spec = list(
+        protocol_type = protocol_type,
+        target = target,
+        token = token,
+        conn = conn,
+        label = progress_label,
+        progress_path = protocol_progress_path(job_id),
+        result_path = protocol_result_path(job_id),
+        project_root = project_root,
+        account_storage_path = source_path,
+        set_protocol_path = set_protocol_path
+      ),
+      on_success = function(result) {
+        report <- result$report
+        report$theme <- launch_theme
+        report$view_theme <- launch_theme
+        set_report(report)
+        add_report_to_archive(report, target)
+        current_page("set_report")
+      },
+      on_error = function(message) {
+        update_protocol_progress(0, "Protocol stopped")
+        notify_user(message, type = "error", duration = 10)
+        current_page("protocol")
+      }
+    )
+
+    enqueue_protocol_job(job)
 
     invisible(TRUE)
   }
@@ -3387,7 +3794,11 @@ server <- function(input, output, session) {
     } else if (identical(current_page(), "set_loading")) {
       set_loading_screen(analysis_target() %||% "")
     } else if (identical(current_page(), "set_report")) {
-      set_report_screen(set_report())
+      report <- set_report()
+      if (is.list(report)) {
+        report$view_theme <- theme_mode()
+      }
+      set_report_screen(report)
     } else if (identical(current_page(), "archive")) {
       records <- report_archive()
       max_page <- max(1L, ceiling(length(records) / 15L))
