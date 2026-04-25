@@ -2910,10 +2910,156 @@ server <- function(input, output, session) {
     avatar_id = "egypt_1",
     github_token = ""
   )
+  protocol_queue <- reactiveVal(list())
+  protocol_active_job <- reactiveVal(NULL)
+  protocol_worker <- reactiveVal(NULL)
+  protocol_job_dir <- file.path(tempdir(), "githound_protocol_jobs")
+  dir.create(protocol_job_dir, recursive = TRUE, showWarnings = FALSE)
+
+  protocol_new_job_id <- function() {
+    paste0(
+      format(Sys.time(), "%Y%m%d%H%M%OS3"),
+      "_",
+      paste(sample(c(letters, 0:9), 8L, replace = TRUE), collapse = "")
+    )
+  }
+
+  protocol_progress_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, ".rds"))
+  }
+
+  protocol_input_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, "_input.rds"))
+  }
+
+  protocol_result_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, "_result.rds"))
+  }
+
+  protocol_log_path <- function(job_id) {
+    file.path(protocol_job_dir, paste0(job_id, ".log"))
+  }
+
+  protocol_write_progress <- function(path, value = 0, label = NULL) {
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    saveRDS(list(value = value, label = label, updated_at = Sys.time()), path)
+  }
+
+  protocol_read_progress <- function(path) {
+    if (!file.exists(path)) return(NULL)
+    tryCatch(readRDS(path), error = function(e) NULL)
+  }
+
+  update_protocol_progress <- function(value, label = NULL) {
+    value <- max(0, min(100, as.integer(value %||% 0)))
+    if (is.null(label) || !nzchar(label)) {
+      label <- set_progress$label %||% ""
+    }
+    set_progress$value <- value
+    set_progress$label <- label
+    session$sendCustomMessage("setSetProgress", list(value = value, label = label))
+  }
+
+  sync_protocol_progress <- function(job) {
+    progress <- protocol_read_progress(job$progress_path)
+    if (is.list(progress)) {
+      update_protocol_progress(progress$value %||% 0, progress$label %||% job$label)
+    }
+  }
+
+  complete_protocol_job <- function(job, result) {
+    sync_protocol_progress(job)
+    protocol_active_job(NULL)
+    protocol_worker(NULL)
+    try(unlink(c(job$progress_path, job$input_path)), silent = TRUE)
+
+    if (is.list(result) && isTRUE(result$ok)) {
+      job$on_success(result$result)
+    } else {
+      job$on_error(result$error %||% "Protocol job failed.")
+    }
+    start_next_protocol_job()
+  }
+
+  poll_protocol_job <- function() {
+    job <- isolate(protocol_active_job())
+    if (is.null(job)) return(invisible(FALSE))
+
+    sync_protocol_progress(job)
+    if (!file.exists(job$result_path)) {
+      later::later(poll_protocol_job, delay = 0.5)
+      return(invisible(TRUE))
+    }
+
+    result <- tryCatch(
+      readRDS(job$result_path),
+      error = function(e) list(ok = FALSE, error = conditionMessage(e))
+    )
+    complete_protocol_job(job, result)
+    invisible(TRUE)
+  }
+
+  start_next_protocol_job <- function() {
+    if (!is.null(isolate(protocol_active_job()))) return(invisible(FALSE))
+
+    queue <- isolate(protocol_queue())
+    if (length(queue) == 0L) return(invisible(FALSE))
+
+    job <- queue[[1L]]
+    protocol_queue(queue[-1L])
+    protocol_active_job(job)
+    analysis_target(job$target)
+    current_page("set_loading")
+    update_protocol_progress(0, job$label)
+    protocol_write_progress(job$progress_path, 0, job$label)
+
+    worker_script <- file.path(app_dir, "protocol_worker.R")
+    rscript <- file.path(R.home("bin"), if (identical(.Platform$OS.type, "windows")) "Rscript.exe" else "Rscript")
+    if (!file.exists(rscript)) {
+      rscript <- "Rscript"
+    }
+
+    try(unlink(job$result_path), silent = TRUE)
+    saveRDS(job$spec, job$input_path)
+    started <- tryCatch({
+      system2(
+        rscript,
+        args = c(worker_script, job$input_path),
+        stdout = job$log_path,
+        stderr = job$log_path,
+        wait = FALSE
+      )
+      TRUE
+    }, error = function(e) {
+      complete_protocol_job(job, list(ok = FALSE, error = conditionMessage(e)))
+      FALSE
+    })
+
+    if (isTRUE(started)) {
+      protocol_worker(list(started_at = Sys.time(), log_path = job$log_path))
+      later::later(poll_protocol_job, delay = 0.5)
+    }
+
+    invisible(TRUE)
+  }
+
+  enqueue_protocol_job <- function(job) {
+    queue <- isolate(protocol_queue())
+    protocol_queue(c(queue, list(job)))
+    start_next_protocol_job()
+    invisible(TRUE)
+  }
+
+  session$onSessionEnded(function() {
+    protocol_queue(list())
+    protocol_active_job(NULL)
+    protocol_worker(NULL)
+  })
 
   launch_protocol <- function(protocol_type, target = trimws(analysis_target() %||% "")) {
     target <- trimws(target %||% "")
     protocol_type <- tolower(protocol_type %||% "")
+    token <- trimws(account$github_token %||% "")
 
     if (!nzchar(target)) {
       notify_user("Не указана цель.", type = "error", duration = 6)
@@ -2922,7 +3068,6 @@ server <- function(input, output, session) {
     }
 
     if (identical(protocol_type, "set")) {
-      token <- trimws(account$github_token %||% "")
       if (!nzchar(token)) {
         notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
         current_page("account")
@@ -3015,11 +3160,44 @@ server <- function(input, output, session) {
       }
     }
 
-    if (requireNamespace("later", quietly = TRUE)) {
-      later::later(run_job, delay = 0.2)
-    } else {
-      run_job()
-    }
+    job_id <- protocol_new_job_id()
+    job <- list(
+      id = job_id,
+      target = target,
+      protocol_type = protocol_type,
+      label = progress_label,
+      progress_path = protocol_progress_path(job_id),
+      input_path = protocol_input_path(job_id),
+      result_path = protocol_result_path(job_id),
+      log_path = protocol_log_path(job_id),
+      spec = list(
+        protocol_type = protocol_type,
+        target = target,
+        token = token,
+        conn = conn,
+        label = progress_label,
+        progress_path = protocol_progress_path(job_id),
+        result_path = protocol_result_path(job_id),
+        project_root = project_root,
+        account_storage_path = source_path,
+        set_protocol_path = set_protocol_path
+      ),
+      on_success = function(result) {
+        report <- result$report
+        report$theme <- launch_theme
+        report$view_theme <- launch_theme
+        set_report(report)
+        add_report_to_archive(report, target)
+        current_page("set_report")
+      },
+      on_error = function(message) {
+        update_protocol_progress(0, "Protocol stopped")
+        notify_user(message, type = "error", duration = 10)
+        current_page("protocol")
+      }
+    )
+
+    enqueue_protocol_job(job)
 
     invisible(TRUE)
   }
