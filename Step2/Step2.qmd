@@ -159,3 +159,37 @@ format:
 
 </p>
 :::
+---
+
+## Пример извлечения данных из GitHub
+
+<div style="
+display: flex; 
+flex-direction: column; 
+justify-content: center; 
+align-items: center; 
+height: 100%;
+">
+
+<img 
+src="extract-git_examlp.png" 
+style="
+width: 100%;
+max-width: 700px;
+border-radius: 10px;
+box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+"
+/>
+
+<p style="
+margin-top: 20px;
+font-size: 1em;
+color: #444444;
+text-align: center;
+">
+
+Пример функции на R для получения публичных событий пользователя через GitHub API
+
+</p>
+
+</div>
