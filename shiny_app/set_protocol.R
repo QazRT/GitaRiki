@@ -748,6 +748,156 @@ run_isis_protocol <- function(profile,
   list(profile = profile, report = report, result = result)
 }
 
+set_protocol_parallel_workers <- function() {
+  enabled <- tolower(Sys.getenv("GITHOUND_SET_PARALLEL", "true"))
+  if (enabled %in% c("0", "false", "no", "off")) {
+    return(1L)
+  }
+
+  configured <- suppressWarnings(as.integer(Sys.getenv("GITHOUND_SET_WORKERS", "")))
+  if (!is.na(configured) && configured > 0L) {
+    return(max(1L, configured))
+  }
+
+  cores <- tryCatch(parallel::detectCores(logical = TRUE), error = function(e) 4L)
+  if (is.na(cores) || cores < 2L) {
+    cores <- 4L
+  }
+  max(2L, min(4L, cores - 1L))
+}
+
+set_protocol_worker_paths <- function() {
+  root <- find_githound_project_root()
+  set_protocol_path <- file.path(root, "shiny_app", "set_protocol.R")
+  account_storage_path <- file.path(root, "shiny_app", "account_storage.R")
+  task_worker_path <- file.path(root, "shiny_app", "protocol_task_worker.R")
+
+  if (!file.exists(set_protocol_path) || !file.exists(account_storage_path) || !file.exists(task_worker_path)) {
+    return(NULL)
+  }
+
+  list(
+    root = normalizePath(root, winslash = "/", mustWork = FALSE),
+    set_protocol_path = normalizePath(set_protocol_path, winslash = "/", mustWork = TRUE),
+    account_storage_path = normalizePath(account_storage_path, winslash = "/", mustWork = TRUE),
+    task_worker_path = normalizePath(task_worker_path, winslash = "/", mustWork = TRUE)
+  )
+}
+
+set_run_parallel_collection <- function(profile,
+                                        token,
+                                        progress = function(value, label = NULL) NULL,
+                                        timeout_seconds = 900L) {
+  workers <- set_protocol_parallel_workers()
+  paths <- set_protocol_worker_paths()
+  if (workers < 2L) {
+    stop("для параллельного сбора доступен только 1 worker", call. = FALSE)
+  }
+  if (is.null(paths)) {
+    stop("не найден protocol_task_worker.R или файлы протокола", call. = FALSE)
+  }
+
+  tasks <- c("commits", "links", "user_info", "activity_timeline")
+  task_labels <- c(
+    commits = "Сбор коммитов цели",
+    links = "Сбор социальных ссылок",
+    user_info = "Сбор профиля и репозиториев",
+    activity_timeline = "Сбор временной активности"
+  )
+  progress_steps <- c(commits = 25L, links = 35L, user_info = 50L, activity_timeline = 62L)
+
+  job_dir <- file.path(tempdir(), "githound_set_parallel", paste0(format(Sys.time(), "%Y%m%d%H%M%OS3"), "_", Sys.getpid()))
+  dir.create(job_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(try(unlink(job_dir, recursive = TRUE), silent = TRUE), add = TRUE)
+
+  rscript <- file.path(R.home("bin"), if (identical(.Platform$OS.type, "windows")) "Rscript.exe" else "Rscript")
+  if (!file.exists(rscript)) {
+    rscript <- "Rscript"
+  }
+
+  jobs <- list()
+  for (task_name in tasks) {
+    input_path <- file.path(job_dir, paste0(task_name, ".rds"))
+    result_path <- file.path(job_dir, paste0(task_name, "_result.rds"))
+    saveRDS(list(
+      task = task_name,
+      profile = profile,
+      token = token,
+      project_root = paths$root,
+      account_storage_path = paths$account_storage_path,
+      set_protocol_path = paths$set_protocol_path,
+      result_path = result_path
+    ), input_path)
+
+    log_path <- file.path(job_dir, paste0(task_name, ".log"))
+    started <- tryCatch({
+      system2(
+        rscript,
+        args = c(paths$task_worker_path, input_path),
+        stdout = log_path,
+        stderr = log_path,
+        wait = FALSE
+      )
+      TRUE
+    }, error = function(e) {
+      attr(FALSE, "error") <- conditionMessage(e)
+      FALSE
+    })
+
+    if (!isTRUE(started)) {
+      reason <- attr(started, "error", exact = TRUE) %||% "не удалось запустить Rscript"
+      stop("не удалось запустить задачу ", task_name, ": ", reason, call. = FALSE)
+    }
+
+    jobs[[task_name]] <- list(result_path = result_path, log_path = log_path, done = FALSE)
+  }
+
+  results <- list()
+  started_at <- Sys.time()
+  while (length(results) < length(tasks)) {
+    if (as.numeric(difftime(Sys.time(), started_at, units = "secs")) > timeout_seconds) {
+      stop("Параллельный сбор данных превысил лимит ожидания.", call. = FALSE)
+    }
+
+    for (task_name in names(jobs)) {
+      if (isTRUE(jobs[[task_name]]$done) || !file.exists(jobs[[task_name]]$result_path)) {
+        next
+      }
+
+      payload <- tryCatch(readRDS(jobs[[task_name]]$result_path), error = function(e) list(ok = FALSE, error = conditionMessage(e)))
+      if (!isTRUE(payload$ok)) {
+        log_tail <- ""
+        if (file.exists(jobs[[task_name]]$log_path)) {
+          log_lines <- tryCatch(readLines(jobs[[task_name]]$log_path, warn = FALSE, encoding = "UTF-8"), error = function(e) character())
+          log_tail <- paste(utils::tail(log_lines, 5L), collapse = " ")
+        }
+        details <- payload$error %||% paste("Ошибка задачи", task_name)
+        if (nzchar(log_tail)) {
+          details <- paste(details, log_tail)
+        }
+        stop("задача ", task_name, " упала: ", details, call. = FALSE)
+      }
+
+      jobs[[task_name]]$done <- TRUE
+      results[[task_name]] <- payload$result
+      progress(progress_steps[[task_name]], task_labels[[task_name]])
+    }
+
+    if (length(results) < length(tasks)) {
+      done <- length(results)
+      progress(min(62L, 15L + done * 10L), paste0("Параллельный сбор данных: ", done, "/", length(tasks)))
+      Sys.sleep(0.35)
+    }
+  }
+
+  list(
+    commits_df = results$commits,
+    links_df = results$links,
+    user_info = results$user_info,
+    activity_timeline = results$activity_timeline
+  )
+}
+
 run_set_protocol <- function(profile,
                              token,
                              conn,
@@ -767,55 +917,76 @@ run_set_protocol <- function(profile,
 
   progress(5, "Подготовка протокола Сет")
 
-  progress(15, "Сбор коммитов цели")
-  commits_df <- get_user_commits(
-    profile = profile,
-    token = token_arg,
-    include_stats = TRUE,
-    conn = conn
-  )
-
-  progress(30, "Сбор социальных ссылок")
-  links_df <- get_github_social_links(
-    profile = profile,
-    token = token_arg,
-    conn = conn
-  )
-
-  progress(45, "Сбор профиля и репозиториев")
-  user_info <- get_github_user_info(
-    profile = profile,
-    token = token_arg,
-    include_commit_stats = TRUE,
-    conn = conn
-  )
-
-  progress(62, "Сбор временной активности")
-  activity_timeline <- get_github_user_activity_timeline(
-    profile = profile,
-    token = token_arg,
-    conn = conn,
-    start_at = Sys.time() - 365 * 24 * 60 * 60 * 8,
-    end_at = Sys.time(),
-    step = "month",
-    activity_types = c(
-      "commit",
-      "issue_opened",
-      "pr_opened",
-      "issue_comment",
-      "pr_review_comment",
-      "commit_comment",
-      "push_event",
-      "watch_event",
-      "fork_event"
+  progress(15, "Параллельный сбор данных")
+  collected <- tryCatch(
+    set_run_parallel_collection(
+      profile = profile,
+      token = token_arg,
+      progress = progress
     ),
-    include_zero_points = TRUE,
-    use_clickhouse_cache = TRUE,
-    cache_max_age_hours = 12,
-    cache_only = FALSE,
-    profile_cache_table = "github_user_profile_native_stats",
-    save_to_clickhouse = TRUE
+    error = function(e) {
+      progress(15, paste("Параллельный сбор недоступен:", conditionMessage(e)))
+      Sys.sleep(1.5)
+      NULL
+    }
   )
+
+  if (is.list(collected)) {
+    commits_df <- collected$commits_df
+    links_df <- collected$links_df
+    user_info <- collected$user_info
+    activity_timeline <- collected$activity_timeline
+  } else {
+    progress(15, "Сбор коммитов цели")
+    commits_df <- get_user_commits(
+      profile = profile,
+      token = token_arg,
+      include_stats = TRUE,
+      conn = conn
+    )
+
+    progress(30, "Сбор социальных ссылок")
+    links_df <- get_github_social_links(
+      profile = profile,
+      token = token_arg,
+      conn = conn
+    )
+
+    progress(45, "Сбор профиля и репозиториев")
+    user_info <- get_github_user_info(
+      profile = profile,
+      token = token_arg,
+      include_commit_stats = TRUE,
+      conn = conn
+    )
+
+    progress(62, "Сбор временной активности")
+    activity_timeline <- get_github_user_activity_timeline(
+      profile = profile,
+      token = token_arg,
+      conn = conn,
+      start_at = Sys.time() - 365 * 24 * 60 * 60 * 8,
+      end_at = Sys.time(),
+      step = "month",
+      activity_types = c(
+        "commit",
+        "issue_opened",
+        "pr_opened",
+        "issue_comment",
+        "pr_review_comment",
+        "commit_comment",
+        "push_event",
+        "watch_event",
+        "fork_event"
+      ),
+      include_zero_points = TRUE,
+      use_clickhouse_cache = TRUE,
+      cache_max_age_hours = 12,
+      cache_only = FALSE,
+      profile_cache_table = "github_user_profile_native_stats",
+      save_to_clickhouse = TRUE
+    )
+  }
 
   vulnerability_scan <- run_set_vulnerability_scan(
     profile = profile,
