@@ -267,13 +267,14 @@ account_screen <- function(nickname = "Профиль", selected_avatar = "egypt
   )
 }
 
-set_loading_screen <- function(target) {
+set_loading_screen <- function(target, protocol_type = "set") {
+  protocol_label <- archive_protocol_label(protocol_type)
   div(
     class = "home set-loading-page",
     brand_block(),
     div(
       class = "form set-loading-form",
-      h2(class = "section-title", paste("Протокол Сет:", target)),
+      h2(class = "section-title", paste("Протокол", protocol_label, ":", target)),
       uiOutput("set_progress_ui"),
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
     )
@@ -1395,8 +1396,7 @@ ui <- fluidPage(
           box-shadow var(--theme-duration) var(--theme-ease);
       }
 
-      .account-menu:hover .account-menu-panel,
-      .account-menu:focus-within .account-menu-panel {
+      .account-menu.account-menu-open .account-menu-panel {
         opacity: 1;
         pointer-events: auto;
         transform: translateY(0);
@@ -2898,8 +2898,10 @@ server <- function(input, output, session) {
   analysis_target <- reactiveVal(NULL)
   theme_mode <- reactiveVal("hell")
   set_report <- reactiveVal(NULL)
+  active_protocol <- reactiveVal("set")
   report_archive <- reactiveVal(list())
   archive_page <- reactiveVal(1L)
+  menu_open <- reactiveVal(FALSE)
   remember_token <- reactiveVal(NULL)
   remember_attempted <- reactiveVal(FALSE)
   remember_input_seen <- reactiveVal(FALSE)
@@ -3009,6 +3011,7 @@ server <- function(input, output, session) {
     protocol_queue(queue[-1L])
     protocol_active_job(job)
     analysis_target(job$target)
+    active_protocol(job$protocol_type %||% "set")
     current_page("set_loading")
     update_protocol_progress(0, job$label)
     protocol_write_progress(job$progress_path, 0, job$label)
@@ -3077,9 +3080,10 @@ server <- function(input, output, session) {
 
     analysis_target(target)
     set_report(NULL)
+    active_protocol(protocol_type)
     launch_theme <- theme_mode()
     load_user_archive()
-    archive_same_target(target)
+    archive_same_target(target, protocol_type)
     current_page("set_loading")
 
     if (identical(protocol_type, "isis")) {
@@ -3321,32 +3325,30 @@ server <- function(input, output, session) {
     updated
   }
 
-  archive_same_target <- function(target) {
+  archive_same_target <- function(target, protocol_type = NULL) {
     records <- refresh_archive_status()
     normalized_target <- tolower(trimws(target %||% ""))
+    normalized_protocol <- tolower(trimws(protocol_type %||% ""))
     matching_idx <- which(vapply(records, function(item) {
+      item_protocol <- tolower(trimws(item$protocol_type %||% item$report$protocol_type %||% "set"))
       identical(item$status %||% "active", "active") &&
-        identical(tolower(trimws(item$target %||% "")), normalized_target)
+        identical(tolower(trimws(item$target %||% "")), normalized_target) &&
+        (!nzchar(normalized_protocol) || identical(item_protocol, normalized_protocol))
     }, logical(1)))
 
     if (length(matching_idx) == 0L) {
       return(invisible(records))
     }
 
-    created_times <- vapply(records[matching_idx], function(item) {
-      as.numeric(item$created_at %||% Sys.time())
-    }, numeric(1))
-    oldest_idx <- matching_idx[[which.min(created_times)]]
-
     updated <- records
-    updated[[oldest_idx]]$status <- "archived"
-    updated[[oldest_idx]]$archived_at <- Sys.time()
-    try(persist_archive_status(updated[[oldest_idx]]), silent = TRUE)
-
-    changed <- TRUE
-    if (isTRUE(changed)) {
-      report_archive(updated)
+    archived_at <- Sys.time()
+    for (idx in matching_idx) {
+      updated[[idx]]$status <- "archived"
+      updated[[idx]]$archived_at <- archived_at
+      try(persist_archive_status(updated[[idx]]), silent = TRUE)
     }
+
+    report_archive(updated)
     invisible(updated)
   }
 
@@ -3354,7 +3356,7 @@ server <- function(input, output, session) {
     report$theme <- report_theme_value(report, fallback = theme_mode())
     report$protocol_type <- tolower(report$protocol_type %||% "set")
     report$protocol_label <- report$protocol_label %||% archive_protocol_label(report$protocol_type)
-    records <- archive_same_target(target)
+    records <- archive_same_target(target, report$protocol_type)
     created_at <- Sys.time()
     expires_at <- created_at + 7 * 24 * 60 * 60
     item <- list(
@@ -3392,21 +3394,35 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$go_analysis, {
+    menu_open(FALSE)
     current_page("analysis")
   })
 
+  observeEvent(input$toggle_account_menu, {
+    menu_open(!isTRUE(menu_open()))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$menu_go_analysis, {
+    req(account$email)
+    menu_open(FALSE)
+    current_page("analysis")
+  }, ignoreInit = TRUE)
+
   observeEvent(input$open_account, {
     req(account$email)
+    menu_open(FALSE)
     current_page("account")
   })
 
   observeEvent(input$open_archive, {
+    menu_open(FALSE)
     load_user_archive()
     archive_page(1L)
     current_page("archive")
   })
 
   observeEvent(input$logout_request, {
+    menu_open(FALSE)
     showModal(modalDialog(
       easyClose = TRUE,
       title = NULL,
@@ -3762,17 +3778,24 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
-    div(
-      class = "account-menu",
-      div(class = "account-menu-trigger", "Меню"),
-      div(
-      class = "account-menu-panel",
+    menu_items <- tagList(
+      if (!identical(current_page(), "analysis")) {
+        actionButton("menu_go_analysis", "Главная", class = "menu-button secondary-button")
+      },
       actionButton("open_account", "Личный кабинет", class = "menu-button secondary-button"),
       actionButton("open_archive", "Архив", class = "menu-button secondary-button"),
       actionButton("logout_request", "Выход", class = "menu-button secondary-button")
     )
-  )
-})
+
+    div(
+      class = paste("account-menu", if (isTRUE(menu_open())) "account-menu-open" else ""),
+      actionButton("toggle_account_menu", "Меню", class = "account-menu-trigger"),
+      div(
+        class = "account-menu-panel",
+        menu_items
+      )
+    )
+  })
 
   output$page <- renderUI({
     if (identical(current_page(), "boot")) {
@@ -3792,7 +3815,7 @@ server <- function(input, output, session) {
     } else if (identical(current_page(), "protocol")) {
       protocol_screen(analysis_target() %||% "")
     } else if (identical(current_page(), "set_loading")) {
-      set_loading_screen(analysis_target() %||% "")
+      set_loading_screen(analysis_target() %||% "", active_protocol())
     } else if (identical(current_page(), "set_report")) {
       report <- set_report()
       if (is.list(report)) {
