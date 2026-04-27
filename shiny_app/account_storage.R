@@ -410,6 +410,64 @@ register_githound_account <- function(
   row
 }
 
+login_or_register_github_account <- function(
+    conn,
+    github_id,
+    github_login,
+    github_name = "",
+    github_email = "",
+    avatar_id = "egypt_1",
+    table_name = "githound_accounts"
+) {
+  ensure_githound_accounts_table(conn, table_name)
+
+  github_id <- trimws(enc2utf8(as.character(github_id)))
+  github_login <- trimws(enc2utf8(as.character(github_login)))
+  github_name <- trimws(enc2utf8(as.character(github_name %||% "")))
+  github_email <- normalize_githound_email(github_email %||% "")
+
+  if (!nzchar(github_id) || !nzchar(github_login)) {
+    stop("GitHub не вернул идентификатор аккаунта.", call. = FALSE)
+  }
+
+  email <- if (nzchar(github_email)) {
+    github_email
+  } else {
+    paste0("github_", github_id, "@github.local")
+  }
+  nickname <- if (nzchar(github_name)) github_name else github_login
+
+  existing <- get_githound_account(conn, email, table_name)
+  now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+  if (is.data.frame(existing) && nrow(existing) > 0L) {
+    row <- existing[1, , drop = FALSE]
+    row$nickname <- nickname
+    row$updated_at <- now
+    row$version <- as.integer(as.numeric(Sys.time()))
+  } else {
+    row <- data.frame(
+      user_id = paste0("github:", github_id),
+      email = email,
+      password_hash = "github-oauth",
+      nickname = nickname,
+      github_token = "",
+      avatar_id = avatar_id,
+      created_at = now,
+      updated_at = now,
+      version = as.integer(as.numeric(Sys.time())),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  load_df_to_clickhouse(row[, c(
+    "user_id", "email", "password_hash", "nickname", "github_token",
+    "avatar_id", "created_at", "updated_at", "version"
+  ), drop = FALSE], table_name = table_name, conn = conn, append = TRUE)
+
+  row
+}
+
 update_githound_account_profile <- function(
     conn,
     email,
