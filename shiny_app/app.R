@@ -131,13 +131,16 @@ brand_block <- function() {
     div(
       class = "logo-wrap",
       img(src = "githound-hell-logo.png", class = "logo hell-logo", alt = "GitHound logo"),
-      img(src = "githound-heaven-logo.png", class = "logo heaven-logo", alt = "GitHound logo")
+      img(src = "githound-heaven-logo.png", class = "logo heaven-logo", alt = "GitHound logo"),
+      img(src = "githound-norse-logo.png", class = "logo norse-logo", alt = "GitHound Norse logo"),
+      img(src = "githound-norse-heaven-logo.png", class = "logo norse-heaven-logo", alt = "GitHound Norse heaven logo")
     ),
     h1(class = "project-title", "GitHound")
   )
 }
 
-mini_thoth_tip <- function(text) {
+mini_thoth_tip <- function(text, norse_text = NULL) {
+  norse_text <- norse_text %||% text
   div(
     class = "mini-thoth",
     tags$button(
@@ -147,11 +150,14 @@ mini_thoth_tip <- function(text) {
       `aria-label` = "Закрыть совет",
       "x"
     ),
-    img(src = "mini-thoth.svg", class = "mini-thoth-avatar", alt = "Мини-Тот"),
+    img(src = "mini-thoth.svg", class = "mini-thoth-avatar mini-thoth-avatar-egypt", alt = "Мини-Тот"),
+    img(src = "mini-raven.png", class = "mini-thoth-avatar mini-thoth-avatar-norse", alt = "Мини-ворон"),
     div(
       class = "mini-thoth-scroll",
-      div(class = "mini-thoth-title", "Совет мини-Тота"),
-      div(class = "mini-thoth-text", text)
+      div(class = "mini-thoth-title mini-thoth-title-egypt", "Совет мини-Тота"),
+      div(class = "mini-thoth-title mini-thoth-title-norse", "Совет мини-ворона"),
+      div(class = "mini-thoth-text mini-thoth-text-egypt", text),
+      div(class = "mini-thoth-text mini-thoth-text-norse", norse_text)
     )
   )
 }
@@ -248,20 +254,41 @@ protocol_screen <- function(target) {
         class = "protocol-grid",
         div(
           class = "protocol-card",
-          img(src = "protocol-isis.png", class = "protocol-image protocol-hell-image", alt = "Исида"),
-          img(src = "protocol-isis-heaven.png", class = "protocol-image protocol-heaven-image", alt = "Исида"),
-          actionButton("run_isis", "Запуск Исиды", class = "run-button")
+          img(src = "protocol-isis.png", class = "protocol-image protocol-egypt-image protocol-hell-image", alt = "Исида"),
+          img(src = "protocol-isis-heaven.png", class = "protocol-image protocol-egypt-image protocol-heaven-image", alt = "Исида"),
+          img(src = "protocol-odin.png", class = "protocol-image protocol-norse-image protocol-norse-hell-image", alt = "Один"),
+          img(src = "protocol-odin-heaven.png", class = "protocol-image protocol-norse-image protocol-norse-heaven-image", alt = "Один"),
+          actionButton(
+            "run_isis",
+            tagList(
+              span(class = "protocol-label-egypt", "Запуск Исиды"),
+              span(class = "protocol-label-norse", "Запуск ОДИНА")
+            ),
+            class = "run-button"
+          )
         ),
         div(
           class = "protocol-card",
-          img(src = "protocol-set.png", class = "protocol-image protocol-hell-image", alt = "Сет"),
-          img(src = "protocol-set-heaven.png", class = "protocol-image protocol-heaven-image", alt = "Сет"),
-          actionButton("run_set", "Запуск протокола Сет", class = "run-button")
+          img(src = "protocol-set.png", class = "protocol-image protocol-egypt-image protocol-hell-image", alt = "Сет"),
+          img(src = "protocol-set-heaven.png", class = "protocol-image protocol-egypt-image protocol-heaven-image", alt = "Сет"),
+          img(src = "protocol-tyr.png", class = "protocol-image protocol-norse-image protocol-norse-hell-image", alt = "Тюр"),
+          img(src = "protocol-tyr-heaven.png", class = "protocol-image protocol-norse-image protocol-norse-heaven-image", alt = "Тюр"),
+          actionButton(
+            "run_set",
+            tagList(
+              span(class = "protocol-label-egypt", "Запуск протокола Сет"),
+              span(class = "protocol-label-norse", "Запуск протокола ТЮР")
+            ),
+            class = "run-button"
+          )
         )
       ),
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
     ),
-    mini_thoth_tip("ИСИДА — Интеллектуальная Система Интерпретации и Детального Анализа. Сет — сухой протокол анализа без использования ИИ.")
+    mini_thoth_tip(
+      "ИСИДА — Интеллектуальная Система Интерпретации и Детального Анализа. Сет — сухой протокол анализа без использования ИИ.",
+      "ОДИН — Обобщающая Диагностическая Интерпретационная Нейросистема. ТЮР — Точный Юнит Разбора: сухой протокол анализа без использования ИИ."
+    )
   )
 }
 
@@ -275,6 +302,7 @@ account_screen <- function(nickname = "Профиль", selected_avatar = "egypt
         uiOutput("profile_photo"),
         h2(class = "section-title", nickname),
         p(class = "account-copy", "Личный аккаунт GitHound"),
+        uiOutput("mythology_style_picker"),
         actionButton("toggle_avatars", "Выбрать стандартное фото", class = "menu-button secondary-button")
       ),
       passwordInput("account_token", "GitHub токен", value = github_token, placeholder = "Введите токен для анализа"),
@@ -1056,7 +1084,9 @@ archive_screen <- function(records, page = 1L) {
     div(
       class = "archive-thoth",
       img(src = "archive-thoth.png", class = "archive-thoth-img archive-thoth-hell", alt = "Тот с папирусом"),
-      img(src = "archive-thoth-heaven.png", class = "archive-thoth-img archive-thoth-heaven", alt = "Тот с папирусом")
+      img(src = "archive-thoth-heaven.png", class = "archive-thoth-img archive-thoth-heaven", alt = "Тот с папирусом"),
+      img(src = "archive-raven-norse.png", class = "archive-thoth-img archive-raven-norse", alt = "Ворон Одина со свитком"),
+      img(src = "archive-raven-norse-heaven.png", class = "archive-thoth-img archive-raven-norse-heaven", alt = "Ворон Одина со свитком")
     )
   )
 }
@@ -1137,6 +1167,12 @@ ui <- fluidPage(
         return $('#remember_me').is(':checked');
       }
 
+      function applyMythologyStyle(style) {
+        style = style || 'egypt';
+        document.body.classList.remove('myth-egypt', 'myth-norse', 'myth-greece');
+        document.body.classList.add('myth-' + style);
+      }
+
       function getGithubOAuthState() {
         try {
           return getCookie('githound_github_oauth_state') ||
@@ -1163,6 +1199,7 @@ ui <- fluidPage(
         if (window.Shiny) {
           Shiny.setInputValue('theme_mode', document.body.classList.contains('heaven-theme') ? 'heaven' : 'hell', {priority: 'event'});
         }
+        applyMythologyStyle('egypt');
         var observer = new MutationObserver(function() {
           fillRememberedLogin();
           setupLoginAutofill();
@@ -1201,6 +1238,10 @@ ui <- fluidPage(
         if (window.history && window.history.replaceState) {
           window.history.replaceState({}, document.title, window.location.pathname);
         }
+      });
+
+      Shiny.addCustomMessageHandler('applyMythologyStyle', function(data) {
+        applyMythologyStyle(data && data.style ? data.style : 'egypt');
       });
 
       Shiny.addCustomMessageHandler('setSetProgress', function(data) {
@@ -1412,6 +1453,74 @@ ui <- fluidPage(
         opacity: 1;
       }
 
+      body.myth-norse:not(.heaven-theme) {
+        --panel: rgba(14, 8, 8, 0.92);
+        --line: #c33418;
+        --accent: #ff1e28;
+        --accent-hover: #ff454f;
+        background:
+          linear-gradient(rgba(6, 0, 0, 0.1), rgba(0, 0, 0, 0.28)),
+          url('norse-hell-bg.png'),
+          radial-gradient(circle at 48% 54%, rgba(255, 79, 18, 0.22), transparent 30%),
+          linear-gradient(180deg, #101015 0%, #050304 55%, #000000 100%);
+        background-size: auto, cover, auto, auto;
+        background-position: center, center, center, center;
+        background-attachment: fixed;
+      }
+
+      body.myth-norse:not(.heaven-theme)::before {
+        background:
+          radial-gradient(circle at 22% 35%, rgba(255, 188, 58, 0.18), transparent 18%),
+          radial-gradient(circle at 64% 42%, rgba(255, 82, 15, 0.2), transparent 20%),
+          radial-gradient(circle at 78% 72%, rgba(255, 142, 24, 0.14), transparent 16%);
+        mix-blend-mode: screen;
+        opacity: 0.68;
+        animation: norse-lava-pulse 2.9s ease-in-out infinite;
+      }
+
+      body.myth-norse.heaven-theme {
+        --page-bg: #061c3c;
+        --panel: rgba(238, 249, 255, 0.86);
+        --ink: #102334;
+        --muted: #557489;
+        --line: #7dbbe2;
+        --accent: #9bdcff;
+        --accent-hover: #ffffff;
+        --secondary-bg: #effbff;
+        --secondary-ink: #174d68;
+        --secondary-line: #8fd4f2;
+      }
+
+      body.myth-norse.heaven-theme::before {
+        background:
+          linear-gradient(rgba(238, 250, 255, 0.2), rgba(197, 229, 245, 0.12)),
+          url('norse-heaven-bg.png'),
+          radial-gradient(circle at 50% 42%, rgba(225, 249, 255, 0.86), rgba(132, 211, 244, 0.48) 20%, rgba(20, 88, 140, 0.44) 42%, transparent 68%),
+          radial-gradient(circle at 18% 82%, rgba(125, 203, 235, 0.3), transparent 34%),
+          radial-gradient(circle at 84% 18%, rgba(255, 255, 255, 0.28), transparent 30%),
+          linear-gradient(180deg, #07142f 0%, #0c315d 48%, #051222 100%);
+        background-size: auto, cover, auto, auto, auto, auto;
+        background-position: center, center, center, center, center, center;
+        background-attachment: fixed;
+        opacity: 1;
+      }
+
+      body.myth-norse.heaven-theme::after {
+        content: '';
+        inset: 0;
+        width: auto;
+        height: auto;
+        background:
+          url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%221280%22 height=%22720%22 viewBox=%220 0 1280 720%22%3E%3Cg fill=%22none%22 stroke=%22%23ffffff%22 stroke-linecap=%22square%22 stroke-linejoin=%22miter%22 opacity=%22.52%22%3E%3Cg stroke-width=%226%22 transform=%22translate(48 42) rotate(-8)%22%3E%3Cpath d=%22M0 0v92M0 30l58-26M0 57l52 27%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(206 86) rotate(13) scale(1.15)%22%3E%3Cpath d=%22M0 0l62 38-62 42z%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(392 34) rotate(0) scale(.95)%22%3E%3Cpath d=%22M0 0v96M58 0v96M0 48h58%22/%3E%3C/g%3E%3Cg stroke-width=%228%22 transform=%22translate(560 62) rotate(-18) scale(1.25)%22%3E%3Cpath d=%22M0 0l76 92M76 0L0 92%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(820 42) rotate(9)%22%3E%3Cpath d=%22M0 0l62 38-62 42z%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(1036 78) rotate(-4)%22%3E%3Cpath d=%22M0 0v88M58 0v88M0 44h58%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(1162 44) rotate(16) scale(1.08)%22%3E%3Cpath d=%22M0 0l74 88M74 0L0 88%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(88 228) rotate(2) scale(1.1)%22%3E%3Cpath d=%22M0 0v92M0 0h62M0 46h48%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(286 258) rotate(-24) scale(1.2)%22%3E%3Cpath d=%22M64 0L0 45l64 45%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(462 216) rotate(14)%22%3E%3Cpath d=%22M0 0v92M0 44l70-36M0 44l70 36%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(650 246) rotate(-2) scale(1.18)%22%3E%3Cpath d=%22M0 0v94M0 0h58v94%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(858 230) rotate(21)%22%3E%3Cpath d=%22M0 0l62 38-62 42z%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(1030 250) rotate(-15) scale(1.14)%22%3E%3Cpath d=%22M0 0v92M0 44l70-36M0 44l70 36%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(1188 226) rotate(8) scale(1.08)%22%3E%3Cpath d=%22M0 0v96h54%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(38 438) rotate(-13) scale(1.2)%22%3E%3Cpath d=%22M0 0l72 86M72 0L0 86%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(220 490) rotate(8)%22%3E%3Cpath d=%22M0 0l62 38-62 42z%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(418 450) rotate(-3) scale(1.1)%22%3E%3Cpath d=%22M0 0v92M58 0v92M0 46h58%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(612 512) rotate(18)%22%3E%3Cpath d=%22M0 0v92M0 0h58v92%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(802 452) rotate(-18) scale(1.15)%22%3E%3Cpath d=%22M64 0L0 45l64 45%22/%3E%3C/g%3E%3Cg stroke-width=%226%22 transform=%22translate(1002 488) rotate(6)%22%3E%3Cpath d=%22M0 0v92M0 44l70-36M0 44l70 36%22/%3E%3C/g%3E%3Cg stroke-width=%227%22 transform=%22translate(1182 448) rotate(-10) scale(1.1)%22%3E%3Cpath d=%22M0 0l70 88M70 0L0 88%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E');
+        background-size: cover;
+        background-position: center;
+        box-shadow: none;
+        opacity: 0.78;
+        filter: drop-shadow(0 0 18px rgba(255, 255, 255, 0.95))
+          drop-shadow(0 0 42px rgba(143, 216, 255, 0.82));
+        animation: norse-runes-glow 4.8s ease-in-out infinite;
+      }
+
       body::after {
         width: 8px;
         height: 8px;
@@ -1613,6 +1722,25 @@ ui <- fluidPage(
         filter: saturate(1.18);
       }
 
+      body.myth-norse .logo-wrap {
+        filter: drop-shadow(7px 7px 0 rgba(20, 0, 5, 0.75))
+          drop-shadow(-5px 4px 0 rgba(86, 211, 255, 0.38));
+      }
+
+      body.myth-norse .logo-wrap::before,
+      body.myth-norse .logo-wrap::after,
+      body.myth-norse.heaven-theme .logo-wrap::before,
+      body.myth-norse.heaven-theme .logo-wrap::after {
+        background-image: url('githound-norse-logo.png');
+        opacity: 0.18;
+        filter: saturate(1.25) contrast(1.08);
+      }
+
+      body.myth-norse.heaven-theme .logo-wrap::before,
+      body.myth-norse.heaven-theme .logo-wrap::after {
+        background-image: url('githound-norse-heaven-logo.png');
+      }
+
       .logo {
         position: absolute;
         inset: 0;
@@ -1635,6 +1763,16 @@ ui <- fluidPage(
         opacity: 0;
       }
 
+      .norse-logo {
+        display: none;
+        opacity: 0;
+      }
+
+      .norse-heaven-logo {
+        display: none;
+        opacity: 0;
+      }
+
       body:not(.heaven-theme) .hell-logo {
         display: block;
         opacity: 1;
@@ -1651,6 +1789,26 @@ ui <- fluidPage(
       }
 
       body.heaven-theme .heaven-logo {
+        display: block;
+        opacity: 1;
+      }
+
+      body.myth-norse .hell-logo,
+      body.myth-norse .heaven-logo,
+      body.myth-norse .norse-heaven-logo,
+      body.myth-norse.heaven-theme .hell-logo,
+      body.myth-norse.heaven-theme .heaven-logo,
+      body.myth-norse.heaven-theme .norse-logo {
+        display: none;
+        opacity: 0;
+      }
+
+      body.myth-norse .norse-logo {
+        display: block;
+        opacity: 1;
+      }
+
+      body.myth-norse.heaven-theme .norse-heaven-logo {
         display: block;
         opacity: 1;
       }
@@ -1826,6 +1984,55 @@ ui <- fluidPage(
         transition: color var(--theme-duration) var(--theme-ease);
       }
 
+      .myth-style-picker {
+        display: grid;
+        gap: 8px;
+        width: 100%;
+        margin-top: 8px;
+      }
+
+      .myth-style-title {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 900;
+        text-align: center;
+        transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .myth-style-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .myth-style-button {
+        min-height: 40px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--secondary-bg);
+        color: var(--secondary-ink);
+        font-size: 13px;
+        font-weight: 900;
+        box-shadow: 3px 3px 0 var(--button-shadow);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease),
+          opacity var(--theme-duration) var(--theme-ease);
+      }
+
+      .myth-style-button.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--button-ink);
+        box-shadow: 0 0 22px rgba(224, 24, 36, 0.24);
+      }
+
+      .myth-style-button.disabled {
+        cursor: not-allowed;
+        opacity: 0.44;
+      }
+
       .protocol-page {
         width: min(100%, 820px);
         max-width: 820px;
@@ -1876,11 +2083,34 @@ ui <- fluidPage(
         display: none;
       }
 
+      .protocol-norse-image,
+      .protocol-label-norse {
+        display: none;
+      }
+
       body.heaven-theme .protocol-hell-image {
         display: none;
       }
 
       body.heaven-theme .protocol-heaven-image {
+        display: block;
+      }
+
+      body.myth-norse .protocol-egypt-image,
+      body.myth-norse .protocol-label-egypt {
+        display: none;
+      }
+
+      body.myth-norse .protocol-norse-image {
+        display: none;
+      }
+
+      body.myth-norse .protocol-label-norse {
+        display: inline;
+      }
+
+      body.myth-norse:not(.heaven-theme) .protocol-norse-hell-image,
+      body.myth-norse.heaven-theme .protocol-norse-heaven-image {
         display: block;
       }
 
@@ -2064,6 +2294,22 @@ ui <- fluidPage(
           0 0 30px rgba(217, 165, 46, 0.52);
       }
 
+      body.myth-norse .set-progress-track {
+        border-color: rgba(173, 239, 255, 1);
+        background: rgba(5, 18, 31, 0.84);
+        box-shadow: inset 0 0 18px rgba(0, 18, 35, 0.72),
+          0 0 30px rgba(162, 232, 255, 0.58),
+          0 0 54px rgba(75, 168, 225, 0.28);
+      }
+
+      body.myth-norse.heaven-theme .set-progress-track {
+        border-color: rgba(222, 250, 255, 1);
+        background: rgba(241, 252, 255, 0.9);
+        box-shadow: inset 0 0 18px rgba(98, 174, 216, 0.32),
+          0 0 36px rgba(220, 251, 255, 0.72),
+          0 0 64px rgba(120, 210, 255, 0.44);
+      }
+
       .set-progress-fill {
         position: absolute;
         inset: 7px auto 7px 7px;
@@ -2082,6 +2328,18 @@ ui <- fluidPage(
         background: linear-gradient(90deg, #b87900, #ffca1f 38%, #fff3a4 66%, #d6a000);
         box-shadow: 0 0 24px rgba(217, 165, 46, 0.98),
           0 0 52px rgba(125, 203, 235, 0.42);
+      }
+
+      body.myth-norse .set-progress-fill {
+        background: linear-gradient(90deg, #57c7ff, #dffaff 38%, #ffffff 58%, #78d8ff);
+        box-shadow: 0 0 26px rgba(203, 246, 255, 0.96),
+          0 0 58px rgba(79, 187, 255, 0.64);
+      }
+
+      body.myth-norse.heaven-theme .set-progress-fill {
+        background: linear-gradient(90deg, #8de8ff, #ffffff 45%, #c9f7ff 70%, #58bce8);
+        box-shadow: 0 0 30px rgba(255, 255, 255, 0.98),
+          0 0 62px rgba(128, 221, 255, 0.72);
       }
 
       .set-progress-fill::after {
@@ -2104,6 +2362,28 @@ ui <- fluidPage(
           drop-shadow(0 0 12px rgba(255, 211, 90, 0.7));
         opacity: 1 !important;
         transition: left 620ms var(--theme-ease);
+      }
+
+      .mini-mjolnir {
+        position: absolute;
+        top: 50%;
+        left: max(8px, calc(var(--set-progress, 0%) - 28px));
+        width: 62px;
+        height: auto;
+        transform: translateY(-50%);
+        filter: drop-shadow(0 6px 12px rgba(0, 18, 35, 0.58))
+          drop-shadow(0 0 14px rgba(210, 250, 255, 0.86));
+        opacity: 1 !important;
+        transition: left 620ms var(--theme-ease);
+        display: none;
+      }
+
+      body.myth-norse .mini-horus {
+        display: none;
+      }
+
+      body.myth-norse .mini-mjolnir {
+        display: block;
       }
 
       .set-progress-percent {
@@ -2316,6 +2596,11 @@ ui <- fluidPage(
         display: none;
       }
 
+      .archive-raven-norse,
+      .archive-raven-norse-heaven {
+        display: none;
+      }
+
       body.heaven-theme .archive-thoth {
         opacity: 0.62;
         mix-blend-mode: multiply;
@@ -2334,6 +2619,40 @@ ui <- fluidPage(
       body.heaven-theme .archive-thoth-img {
         filter: saturate(0.9) contrast(0.92) brightness(1.03)
           drop-shadow(0 16px 22px rgba(120, 154, 174, 0.12));
+      }
+
+      body.myth-norse .archive-thoth {
+        width: min(30vw, 300px);
+      }
+
+      body.myth-norse .archive-thoth-hell,
+      body.myth-norse .archive-thoth-heaven {
+        display: none;
+      }
+
+      body.myth-norse:not(.heaven-theme) .archive-thoth {
+        opacity: 0.34;
+        mix-blend-mode: screen;
+      }
+
+      body.myth-norse:not(.heaven-theme) .archive-raven-norse {
+        display: block;
+      }
+
+      body.myth-norse.heaven-theme .archive-thoth {
+        opacity: 0.58;
+        mix-blend-mode: multiply;
+      }
+
+      body.myth-norse.heaven-theme .archive-raven-norse-heaven {
+        display: block;
+        -webkit-mask-image: radial-gradient(ellipse at center, #000 48%, rgba(0, 0, 0, 0.74) 70%, transparent 92%);
+        mask-image: radial-gradient(ellipse at center, #000 48%, rgba(0, 0, 0, 0.74) 70%, transparent 92%);
+      }
+
+      body.myth-norse .archive-raven-norse,
+      body.myth-norse .archive-raven-norse-heaven {
+        filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.36));
       }
 
       .divine-seal span {
@@ -2747,6 +3066,46 @@ ui <- fluidPage(
           transform var(--theme-duration) var(--theme-ease);
       }
 
+      .mini-thoth-avatar-norse,
+      .mini-thoth-title-norse,
+      .mini-thoth-text-norse {
+        display: none;
+      }
+
+      body.myth-norse .mini-thoth-avatar-egypt,
+      body.myth-norse .mini-thoth-title-egypt,
+      body.myth-norse .mini-thoth-text-egypt {
+        display: none;
+      }
+
+      body.myth-norse .mini-thoth-avatar-norse,
+      body.myth-norse .mini-thoth-title-norse,
+      body.myth-norse .mini-thoth-text-norse {
+        display: block;
+      }
+
+      body.myth-norse .mini-thoth {
+        grid-template-columns: 58px minmax(0, 260px);
+      }
+
+      body.myth-norse .mini-thoth-avatar {
+        width: 58px;
+      }
+
+      body.myth-norse .mini-thoth-avatar-norse,
+      body.myth-norse .logout-modal-avatar-norse {
+        border-radius: 42%;
+        clip-path: inset(3% 4% 4% 4% round 42%);
+        background: transparent;
+      }
+
+      body.myth-norse.heaven-theme .mini-thoth-avatar-norse,
+      body.myth-norse.heaven-theme .logout-modal-avatar-norse {
+        mix-blend-mode: screen;
+        filter: drop-shadow(0 10px 18px rgba(15, 67, 102, 0.28))
+          drop-shadow(0 0 14px rgba(155, 220, 255, 0.58));
+      }
+
       .mini-thoth-scroll {
         position: relative;
         padding: 12px 14px;
@@ -2816,6 +3175,21 @@ ui <- fluidPage(
         width: 64px;
         height: auto;
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
+      }
+
+      .logout-modal-avatar-norse,
+      .logout-modal-title-norse {
+        display: none;
+      }
+
+      body.myth-norse .logout-modal-avatar-egypt,
+      body.myth-norse .logout-modal-title-egypt {
+        display: none;
+      }
+
+      body.myth-norse .logout-modal-avatar-norse,
+      body.myth-norse .logout-modal-title-norse {
+        display: block;
       }
 
       .logout-modal-copy {
@@ -2916,6 +3290,37 @@ ui <- fluidPage(
       body.heaven-theme .secondary-button:focus {
         background: #ffffff;
         color: #174e65;
+      }
+
+      body.myth-norse.heaven-theme .run-button,
+      body.myth-norse.heaven-theme .primary-button {
+        background: linear-gradient(135deg, #eefcff 0%, #8fd6ff 48%, #1b5c91 100%);
+        border-color: #b9ecff;
+        color: #102334;
+        box-shadow: 5px 5px 0 rgba(4, 24, 48, 0.46),
+          -5px -5px 0 rgba(255, 255, 255, 0.72),
+          0 0 32px rgba(190, 241, 255, 0.58);
+      }
+
+      body.myth-norse.heaven-theme .secondary-button,
+      body.myth-norse.heaven-theme .menu-button {
+        border-color: #a9e8ff;
+        background: linear-gradient(135deg, rgba(242, 252, 255, 0.96), rgba(98, 170, 219, 0.74));
+        color: #102334;
+        box-shadow: 5px 5px 0 rgba(4, 24, 48, 0.4),
+          0 0 24px rgba(190, 241, 255, 0.38);
+      }
+
+      body.myth-norse.heaven-theme .run-button:hover,
+      body.myth-norse.heaven-theme .run-button:focus,
+      body.myth-norse.heaven-theme .primary-button:hover,
+      body.myth-norse.heaven-theme .primary-button:focus,
+      body.myth-norse.heaven-theme .secondary-button:hover,
+      body.myth-norse.heaven-theme .secondary-button:focus,
+      body.myth-norse.heaven-theme .menu-button:hover,
+      body.myth-norse.heaven-theme .menu-button:focus {
+        background: linear-gradient(135deg, #ffffff 0%, #bdf2ff 52%, #3f91c4 100%);
+        color: #081d2d;
       }
 
       .home::before,
@@ -3066,6 +3471,30 @@ ui <- fluidPage(
         }
       }
 
+      @keyframes norse-lava-pulse {
+        0%, 100% {
+          filter: brightness(0.85) saturate(1.1);
+          opacity: 0.52;
+        }
+        50% {
+          filter: brightness(1.35) saturate(1.7);
+          opacity: 1;
+        }
+      }
+
+      @keyframes norse-runes-glow {
+        0%, 100% {
+          opacity: 0.52;
+          filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.72))
+            drop-shadow(0 0 28px rgba(143, 216, 255, 0.55));
+        }
+        48%, 56% {
+          opacity: 1;
+          filter: drop-shadow(0 0 22px rgba(255, 255, 255, 1))
+            drop-shadow(0 0 58px rgba(172, 235, 255, 0.98));
+        }
+      }
+
       @keyframes logo-glitch-a {
         0%, 82%, 100% {
           clip-path: inset(0 0 0 0);
@@ -3146,6 +3575,7 @@ server <- function(input, output, session) {
   avatars_open <- reactiveVal(FALSE)
   analysis_target <- reactiveVal(NULL)
   theme_mode <- reactiveVal("hell")
+  mythology_style <- reactiveVal("egypt")
   set_report <- reactiveVal(NULL)
   active_protocol <- reactiveVal("set")
   report_archive <- reactiveVal(list())
@@ -3693,10 +4123,12 @@ server <- function(input, output, session) {
       ),
       div(
         class = "logout-modal",
-        img(src = "mini-thoth.svg", class = "logout-modal-avatar", alt = "Мини-Тот"),
+        img(src = "mini-thoth.svg", class = "logout-modal-avatar logout-modal-avatar-egypt", alt = "Мини-Тот"),
+        img(src = "mini-raven.png", class = "logout-modal-avatar logout-modal-avatar-norse", alt = "Мини-ворон"),
         div(
           class = "logout-modal-copy",
-          div(class = "logout-modal-title", "Мини-Тот"),
+          div(class = "logout-modal-title logout-modal-title-egypt", "Мини-Тот"),
+          div(class = "logout-modal-title logout-modal-title-norse", "Мини-ворон"),
           div(class = "logout-modal-text", "Вы уверены, что хотите выйти из аккаунта?")
         )
       )
@@ -3828,6 +4260,22 @@ server <- function(input, output, session) {
       theme_mode(input$theme_mode)
     }
   }, ignoreInit = FALSE)
+
+  observe({
+    session$sendCustomMessage("applyMythologyStyle", list(style = mythology_style()))
+  })
+
+  observeEvent(input$style_egypt, {
+    mythology_style("egypt")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$style_norse, {
+    mythology_style("norse")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$style_greece, {
+    notify_user("Греческий стиль пока недоступен.", type = "message", duration = 4)
+  }, ignoreInit = TRUE)
 
   observeEvent(input$submit_registration, {
     tryCatch({
@@ -4070,6 +4518,33 @@ server <- function(input, output, session) {
     div(class = "profile-photo", style = avatar_css(account$avatar_id %||% "egypt_1"))
   })
 
+  output$mythology_style_picker <- renderUI({
+    current <- mythology_style()
+    div(
+      class = "myth-style-picker",
+      div(class = "myth-style-title", "Мифологический стиль"),
+      div(
+        class = "myth-style-buttons",
+        actionButton(
+          "style_egypt",
+          "Египетский",
+          class = paste("myth-style-button", if (identical(current, "egypt")) "active" else "")
+        ),
+        actionButton(
+          "style_norse",
+          "Скандинавский",
+          class = paste("myth-style-button", if (identical(current, "norse")) "active" else "")
+        ),
+        actionButton(
+          "style_greece",
+          "Греческий",
+          class = "myth-style-button disabled",
+          title = "Будет добавлен позже"
+        )
+      )
+    )
+  })
+
   output$set_progress_ui <- renderUI({
     value <- max(0, min(100, as.integer(set_progress$value %||% 0)))
     div(
@@ -4080,7 +4555,8 @@ server <- function(input, output, session) {
         class = "set-progress-track",
         style = paste0("--set-progress: ", value, "%;"),
         div(class = "set-progress-fill"),
-        img(src = "mini-horus.svg", class = "mini-horus", alt = "Мини-Гор")
+        img(src = "mini-horus.svg", class = "mini-horus", alt = "Мини-Гор"),
+        img(src = "mini-mjolnir.svg", class = "mini-mjolnir", alt = "Мини-Мьёльнир")
       ),
       div(id = "set_progress_percent", class = "set-progress-percent", paste0(value, "%"))
     )
