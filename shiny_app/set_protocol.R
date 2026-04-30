@@ -257,6 +257,22 @@ set_read_osv_config_file <- function() {
   list()
 }
 
+set_env_flag <- function(name, default = FALSE) {
+  raw <- tolower(trimws(Sys.getenv(name, if (isTRUE(default)) "true" else "false")))
+  raw %in% c("1", "true", "yes", "y", "on")
+}
+
+set_env_int <- function(name, default = NA_integer_, min_value = NULL) {
+  value <- suppressWarnings(as.integer(Sys.getenv(name, "")))
+  if (is.na(value)) {
+    value <- default
+  }
+  if (!is.null(min_value) && !is.na(value)) {
+    value <- max(as.integer(min_value), value)
+  }
+  value
+}
+
 run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = function(value, label = NULL) NULL) {
   root <- find_githound_project_root()
   syft_path <- set_find_syft(root)
@@ -282,12 +298,33 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
 
   tryCatch({
     progress(82, "Поиск уязвимостей зависимостей")
+    scan_workers <- suppressWarnings(as.integer(
+      Sys.getenv("GITHOUND_COMMIT_SCAN_WORKERS", Sys.getenv("GITHOUND_OSV_WORKERS", "16"))
+    ))
+    if (is.na(scan_workers) || scan_workers < 1L) {
+      scan_workers <- 16L
+    }
+    scan_strategy <- trimws(Sys.getenv("GITHOUND_VULN_SCAN_STRATEGY", "auto"))
+    if (!scan_strategy %in% c("manual", "auto", "staged_all")) {
+      scan_strategy <- "auto"
+    }
+    vuln_max_repos <- set_env_int("GITHOUND_VULN_MAX_REPOS", default = NA_integer_, min_value = 1L)
+    vuln_max_commits <- set_env_int("GITHOUND_VULN_MAX_COMMITS_PER_REPO", default = NA_integer_, min_value = 1L)
+    syft_timeout <- set_env_int("GITHOUND_SYFT_TIMEOUT_SEC", default = 0L, min_value = 0L)
+    syft_excludes <- trimws(unlist(strsplit(Sys.getenv("GITHOUND_SYFT_EXCLUDES", ""), ",", fixed = TRUE)))
+    syft_excludes <- syft_excludes[nzchar(syft_excludes)]
+
     scan_args <- list(
       profile = profile,
       osv_db = osv_db,
-      parallel_strategy = "auto",
-      auto_workers = 16L,
+      parallel_strategy = scan_strategy,
+      auto_workers = scan_workers,
+      max_repos = if (is.na(vuln_max_repos)) NULL else vuln_max_repos,
+      max_commits_per_repo = if (is.na(vuln_max_commits)) NULL else vuln_max_commits,
       syft_path = syft_path,
+      syft_timeout_sec = syft_timeout,
+      syft_excludes = if (length(syft_excludes) > 0L) syft_excludes else NULL,
+      debug = set_env_flag("GITHOUND_VULN_DEBUG", default = FALSE),
       token = token,
       conn = conn,
       clickhouse_incremental = TRUE,
@@ -763,7 +800,23 @@ set_protocol_parallel_workers <- function() {
   if (is.na(cores) || cores < 2L) {
     cores <- 4L
   }
-  max(2L, min(4L, cores - 1L))
+  max(2L, min(2L, cores - 1L))
+}
+
+set_protocol_env_flag <- function(name, default = FALSE) {
+  raw <- tolower(trimws(Sys.getenv(name, if (isTRUE(default)) "true" else "false")))
+  raw %in% c("1", "true", "yes", "y", "on")
+}
+
+set_protocol_env_int <- function(name, default = NA_integer_, min_value = NULL) {
+  value <- suppressWarnings(as.integer(Sys.getenv(name, "")))
+  if (is.na(value)) {
+    value <- default
+  }
+  if (!is.null(min_value) && !is.na(value)) {
+    value <- max(as.integer(min_value), value)
+  }
+  value
 }
 
 set_protocol_worker_paths <- function() {
@@ -805,6 +858,9 @@ set_run_parallel_collection <- function(profile,
     activity_timeline = "Сбор временной активности"
   )
   progress_steps <- c(commits = 25L, links = 35L, user_info = 50L, activity_timeline = 62L)
+  top_level_workers <- max(1L, min(as.integer(workers), length(tasks)))
+  commit_include_stats <- set_protocol_env_flag("GITHOUND_COMMIT_INCLUDE_STATS", default = FALSE)
+  commit_max_repos <- set_protocol_env_int("GITHOUND_COMMIT_MAX_REPOS", default = NA_integer_, min_value = 1L)
 
   job_dir <- file.path(tempdir(), "githound_set_parallel", paste0(format(Sys.time(), "%Y%m%d%H%M%OS3"), "_", Sys.getpid()))
   dir.create(job_dir, recursive = TRUE, showWarnings = FALSE)
@@ -816,13 +872,15 @@ set_run_parallel_collection <- function(profile,
   }
 
   jobs <- list()
-  for (task_name in tasks) {
+  start_task <- function(task_name) {
     input_path <- file.path(job_dir, paste0(task_name, ".rds"))
     result_path <- file.path(job_dir, paste0(task_name, "_result.rds"))
     saveRDS(list(
       task = task_name,
       profile = profile,
       token = token,
+      commit_include_stats = commit_include_stats,
+      commit_max_repos = if (is.na(commit_max_repos)) NULL else commit_max_repos,
       project_root = paths$root,
       account_storage_path = paths$account_storage_path,
       set_protocol_path = paths$set_protocol_path,
@@ -849,17 +907,28 @@ set_run_parallel_collection <- function(profile,
       stop("не удалось запустить задачу ", task_name, ": ", reason, call. = FALSE)
     }
 
-    jobs[[task_name]] <- list(result_path = result_path, log_path = log_path, done = FALSE)
+    jobs[[task_name]] <<- list(result_path = result_path, log_path = log_path, done = FALSE, started_at = Sys.time())
+    invisible(TRUE)
   }
 
   results <- list()
+  pending <- tasks
+  running <- character()
+  while (length(running) < top_level_workers && length(pending) > 0L) {
+    task_name <- pending[[1L]]
+    pending <- pending[-1L]
+    start_task(task_name)
+    running <- c(running, task_name)
+  }
+
   started_at <- Sys.time()
   while (length(results) < length(tasks)) {
     if (as.numeric(difftime(Sys.time(), started_at, units = "secs")) > timeout_seconds) {
       stop("Параллельный сбор данных превысил лимит ожидания.", call. = FALSE)
     }
 
-    for (task_name in names(jobs)) {
+    completed_now <- character()
+    for (task_name in running) {
       if (isTRUE(jobs[[task_name]]$done) || !file.exists(jobs[[task_name]]$result_path)) {
         next
       }
@@ -880,12 +949,36 @@ set_run_parallel_collection <- function(profile,
 
       jobs[[task_name]]$done <- TRUE
       results[[task_name]] <- payload$result
+      completed_now <- c(completed_now, task_name)
       progress(progress_steps[[task_name]], task_labels[[task_name]])
+    }
+
+    if (length(completed_now) > 0L) {
+      running <- setdiff(running, completed_now)
+    }
+
+    while (length(running) < top_level_workers && length(pending) > 0L) {
+      task_name <- pending[[1L]]
+      pending <- pending[-1L]
+      start_task(task_name)
+      running <- c(running, task_name)
     }
 
     if (length(results) < length(tasks)) {
       done <- length(results)
       progress(min(62L, 15L + done * 10L), paste0("Параллельный сбор данных: ", done, "/", length(tasks)))
+      running_label <- if (length(running) > 0L) {
+        paste(unname(task_labels[running]), collapse = ", ")
+      } else {
+        "ожидание"
+      }
+      progress(
+        min(62L, 15L + done * 10L),
+        paste0(
+          "Параллельный сбор данных: ",
+          done, "/", length(tasks), "; в работе: ", running_label
+        )
+      )
       Sys.sleep(0.35)
     }
   }
@@ -941,7 +1034,11 @@ run_set_protocol <- function(profile,
     commits_df <- get_user_commits(
       profile = profile,
       token = token_arg,
-      include_stats = TRUE,
+      include_stats = set_protocol_env_flag("GITHOUND_COMMIT_INCLUDE_STATS", default = FALSE),
+      max_repos = {
+        value <- set_protocol_env_int("GITHOUND_COMMIT_MAX_REPOS", default = NA_integer_, min_value = 1L)
+        if (is.na(value)) NULL else value
+      },
       conn = conn
     )
 
@@ -956,7 +1053,8 @@ run_set_protocol <- function(profile,
     user_info <- get_github_user_info(
       profile = profile,
       token = token_arg,
-      include_commit_stats = TRUE,
+      include_commit_stats = FALSE,
+      collect_commits = FALSE,
       conn = conn
     )
 

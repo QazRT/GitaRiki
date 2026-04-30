@@ -16,3 +16,45 @@ OSV_MONGO_DB=osv
 OSV_MONGO_COLLECTION=vulns
 MONGODB_URI=mongodb://localhost:27017
 MONGO_URI=mongodb://localhost:27017
+
+# Number of parallel workers used when collecting commits across repositories.
+# Keep at 1 for sequential collection; raise carefully to avoid GitHub rate limits.
+# Alias also supported: GITHOUND_COMMIT_COLLECTION_WORKERS.
+GITHOUND_COMMIT_WORKERS=1
+
+# Worker budget for the Syft/OSV commit dependency scan in the Set protocol.
+# Alias also supported: GITHOUND_OSV_WORKERS.
+GITHOUND_COMMIT_SCAN_WORKERS=16
+
+# Vulnerability scan parallel strategy: auto, staged_all, or manual.
+# auto is conservative; staged_all can be faster on large profiles but creates more GitHub/API pressure.
+GITHOUND_VULN_SCAN_STRATEGY=auto
+
+# Optional caps for vulnerability scan scope. Leave empty for full-quality scans.
+GITHOUND_VULN_MAX_REPOS=
+GITHOUND_VULN_MAX_COMMITS_PER_REPO=
+
+# Per-Syft scan timeout in seconds. 0 means no timeout.
+GITHOUND_SYFT_TIMEOUT_SEC=0
+
+# Comma-separated Syft exclude patterns, for example: **/node_modules/**,**/.git/**
+GITHOUND_SYFT_EXCLUDES=
+
+# Enable verbose repository-level vulnerability scan logs.
+GITHOUND_VULN_DEBUG=false
+
+# Time zone used for GitHub /rate_limit reset time in the Shiny UI.
+# Use an Olson time zone name, for example: Europe/Moscow, Europe/Berlin, America/New_York.
+# If empty, the app uses R's system time zone; invalid values fall back to UTC.
+GITHOUND_RATE_LIMIT_TZ=Europe/Moscow
+
+# Top-level workers for Set protocol ETL tasks.
+# Keep this modest because commit collection can start its own workers.
+GITHOUND_SET_WORKERS=2
+
+# Per-commit additions/deletions/changes require one extra GitHub request per commit.
+# Leave disabled for much faster Set runs; enable only when those line-change metrics are needed.
+GITHOUND_COMMIT_INCLUDE_STATS=false
+
+# Optional cap for candidate repositories during commit collection. Leave empty for no cap.
+GITHOUND_COMMIT_MAX_REPOS=

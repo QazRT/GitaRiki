@@ -1445,7 +1445,7 @@ ui <- fluidPage(
         position: fixed;
         top: 18px;
         right: 18px;
-        z-index: 2;
+        z-index: 3;
         display: flex;
         gap: 6px;
         padding: 6px;
@@ -1491,6 +1491,81 @@ ui <- fluidPage(
         background: linear-gradient(135deg, #fff4bc, #83d5ef);
         color: #1f2a34;
         box-shadow: 0 0 22px rgba(217, 165, 46, 0.3);
+      }
+
+      .github-rate-card {
+        position: fixed;
+        top: 72px;
+        right: 18px;
+        z-index: 3;
+        width: min(236px, calc(100vw - 36px));
+        padding: 9px 10px 10px;
+        border: 1px solid rgba(255, 43, 52, 0.34);
+        border-radius: 8px;
+        background: rgba(10, 1, 2, 0.78);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+        color: var(--ink);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
+      }
+
+      body.heaven-theme .github-rate-card {
+        border-color: rgba(125, 203, 235, 0.6);
+        background: rgba(255, 255, 255, 0.76);
+        box-shadow: 0 14px 36px rgba(120, 154, 174, 0.24);
+      }
+
+      .github-rate-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 7px;
+      }
+
+      .github-rate-title {
+        font-size: 12px;
+        font-weight: 900;
+        color: var(--muted);
+      }
+
+      .github-rate-value {
+        font-size: 13px;
+        font-weight: 900;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+
+      .github-rate-track {
+        position: relative;
+        overflow: hidden;
+        height: 8px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .github-rate-fill {
+        width: var(--github-rate-percent, 0%);
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #e01824, #f3b64d);
+        transition: width 280ms ease;
+      }
+
+      body.heaven-theme .github-rate-fill {
+        background: linear-gradient(90deg, #83d5ef, #d9a52e);
+      }
+
+      .github-rate-meta {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .account-menu {
@@ -2948,12 +3023,21 @@ ui <- fluidPage(
 
       @media (max-width: 640px) {
         .container-fluid {
-          padding-top: 74px;
+          padding-top: 156px;
         }
 
         .account-menu {
           left: 12px;
           width: 190px;
+        }
+
+        .theme-switch {
+          right: 12px;
+        }
+
+        .github-rate-card {
+          right: 12px;
+          width: min(190px, calc(100vw - 24px));
         }
 
         .avatar-card {
@@ -3125,6 +3209,7 @@ ui <- fluidPage(
       "Ад"
     )
   ),
+  uiOutput("github_rate_limit_ui"),
   uiOutput("account_menu"),
   uiOutput("page")
 )
@@ -3162,6 +3247,52 @@ server <- function(input, output, session) {
     avatar_id = "egypt_1",
     github_token = ""
   )
+  github_rate_limit <- reactiveVal(list(
+    status = "loading",
+    remaining = NA_integer_,
+    limit = NA_integer_,
+    reset = NA_real_,
+    updated_at = Sys.time(),
+    source = "none",
+    error = NULL
+  ))
+
+  fetch_github_rate_limit <- function(token = "") {
+    token <- trimws(as.character(token %||% ""))
+    headers <- c(
+      Accept = "application/vnd.github+json",
+      `User-Agent` = "GitHound-Shiny"
+    )
+    if (nzchar(token)) {
+      headers <- c(headers, Authorization = paste("Bearer", token))
+    }
+
+    response <- httr::GET(
+      "https://api.github.com/rate_limit",
+      do.call(httr::add_headers, as.list(headers)),
+      httr::timeout(8)
+    )
+    text <- httr::content(response, as = "text", encoding = "UTF-8")
+    if (httr::http_error(response)) {
+      stop("GitHub /rate_limit returned HTTP ", httr::status_code(response), call. = FALSE)
+    }
+
+    payload <- jsonlite::fromJSON(text, simplifyVector = FALSE)
+    core <- payload$resources$core %||% payload$rate %||% list()
+    remaining <- suppressWarnings(as.integer(core$remaining %||% NA_integer_))
+    limit <- suppressWarnings(as.integer(core$limit %||% NA_integer_))
+    reset <- suppressWarnings(as.numeric(core$reset %||% NA_real_))
+
+    list(
+      status = "ok",
+      remaining = remaining,
+      limit = limit,
+      reset = reset,
+      updated_at = Sys.time(),
+      source = if (nzchar(token)) "account" else "anonymous",
+      error = NULL
+    )
+  }
   protocol_queue <- reactiveVal(list())
   protocol_active_job <- reactiveVal(NULL)
   protocol_worker <- reactiveVal(NULL)
@@ -3201,6 +3332,23 @@ server <- function(input, output, session) {
     isTRUE(github_oauth_callback_present()) &&
       !isTRUE(github_oauth_processed())
   }
+
+  observe({
+    token <- account$github_token %||% ""
+    invalidateLater(60000, session)
+    github_rate_limit(tryCatch(
+      fetch_github_rate_limit(token),
+      error = function(e) list(
+        status = "error",
+        remaining = NA_integer_,
+        limit = NA_integer_,
+        reset = NA_real_,
+        updated_at = Sys.time(),
+        source = if (nzchar(trimws(token))) "account" else "anonymous",
+        error = conditionMessage(e)
+      )
+    ))
+  })
 
   protocol_write_progress <- function(path, value = 0, label = NULL) {
     dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
@@ -4064,6 +4212,59 @@ server <- function(input, output, session) {
     }, error = function(e) {
       notify_user(conditionMessage(e), type = "error", duration = 7)
     })
+  })
+
+  output$github_rate_limit_ui <- renderUI({
+    rate <- github_rate_limit()
+    remaining <- suppressWarnings(as.integer(rate$remaining %||% NA_integer_))
+    limit <- suppressWarnings(as.integer(rate$limit %||% NA_integer_))
+    percent <- if (!is.na(remaining) && !is.na(limit) && limit > 0L) {
+      max(0, min(100, round(remaining / limit * 100)))
+    } else {
+      0L
+    }
+    value <- if (!is.na(remaining) && !is.na(limit)) {
+      paste0(remaining, " / ", limit)
+    } else {
+      "—"
+    }
+    reset <- suppressWarnings(as.numeric(rate$reset %||% NA_real_))
+    display_tz <- trimws(Sys.getenv("GITHOUND_RATE_LIMIT_TZ", unset = ""))
+    if (!nzchar(display_tz)) {
+      display_tz <- Sys.timezone()
+    }
+    if (!nzchar(display_tz) || is.na(display_tz) || !display_tz %in% OlsonNames()) {
+      display_tz <- "UTC"
+    }
+    reset_label <- if (!is.na(reset) && is.finite(reset) && reset > 0) {
+      paste("сброс", format(as.POSIXct(reset, origin = "1970-01-01", tz = display_tz), "%H:%M %Z"))
+    } else if (identical(rate$status, "error")) {
+      "лимит недоступен"
+    } else {
+      "загрузка /rate_limit"
+    }
+    source_label <- if (identical(rate$source, "account")) "токен аккаунта" else "анонимно"
+    title <- if (identical(rate$status, "error") && nzchar(rate$error %||% "")) {
+      rate$error
+    } else {
+      paste("GitHub /rate_limit:", source_label)
+    }
+
+    div(
+      class = "github-rate-card",
+      title = title,
+      div(
+        class = "github-rate-top",
+        span(class = "github-rate-title", "GitHub API"),
+        span(class = "github-rate-value", value)
+      ),
+      div(
+        class = "github-rate-track",
+        style = paste0("--github-rate-percent: ", percent, "%;"),
+        div(class = "github-rate-fill")
+      ),
+      div(class = "github-rate-meta", paste(reset_label, "·", source_label))
+    )
   })
 
   output$profile_photo <- renderUI({

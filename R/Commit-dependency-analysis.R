@@ -31,34 +31,105 @@
 
 default_dependency_manifest_patterns <- function() {
   c(
+    "(^|/)\\.bundle/config$",
+    "(^|/)\\.cargo/config(\\.toml)?$",
+    "(^|/)\\.config/dotnet-tools\\.json$",
+    "(^|/)\\.devcontainer/devcontainer\\.json$",
+    "(^|/)\\.github/dependabot\\.ya?ml$",
+    "(^|/)\\.ruby-version$",
+    "(^|/)\\.terraform\\.lock\\.hcl$",
+    "(^|/)\\.tool-versions$",
+    "(^|/)Berksfile(\\.lock)?$",
+    "(^|/)Brewfile(\\.lock\\.json)?$",
+    "(^|/)Cartfile(\\.resolved)?$",
+    "(^|/)DESCRIPTION$",
+    "(^|/)Dockerfile(\\.[^/]+)?$",
+    "(^|/)Gemfile(\\.lock)?$",
+    "(^|/)Gopkg\\.(toml|lock)$",
+    "(^|/)Package\\.resolved$",
+    "(^|/)Package\\.swift$",
+    "(^|/)Podfile(\\.lock)?$",
+    "(^|/)Project\\.toml$",
     "(^|/)pom\\.xml$",
     "(^|/)build\\.gradle(\\.kts)?$",
     "(^|/)settings\\.gradle(\\.kts)?$",
     "(^|/)gradle\\.lockfile$",
+    "(^|/)gradle/libs\\.versions\\.toml$",
+    "(^|/)ivy\\.xml$",
+    "(^|/)build\\.sbt$",
+    "(^|/)project/(build\\.properties|plugins\\.sbt)$",
+    "(^|/)deps\\.edn$",
+    "(^|/)project\\.clj$",
     "(^|/)package(-lock)?\\.json$",
     "(^|/)npm-shrinkwrap\\.json$",
     "(^|/)yarn\\.lock$",
+    "(^|/)\\.yarnrc\\.ya?ml$",
+    "(^|/)bun\\.lockb?$",
     "(^|/)pnpm-lock\\.ya?ml$",
+    "(^|/)rush\\.json$",
+    "(^|/)bower\\.json$",
+    "(^|/)jspm\\.json$",
     "(^|/)requirements(\\.[^/]+)?\\.txt$",
+    "(^|/)constraints(\\.[^/]+)?\\.txt$",
     "(^|/)Pipfile(\\.lock)?$",
     "(^|/)pyproject\\.toml$",
     "(^|/)poetry\\.lock$",
+    "(^|/)uv\\.lock$",
+    "(^|/)pdm\\.lock$",
+    "(^|/)setup\\.cfg$",
     "(^|/)setup\\.(py|cfg)$",
+    "(^|/)environment\\.ya?ml$",
+    "(^|/)conda-lock\\.ya?ml$",
+    "(^|/)renv\\.lock$",
+    "(^|/)pak\\.lock$",
+    "(^|/)packrat/packrat\\.lock$",
+    "(^|/)install\\.R$",
+    "(^|/)packages\\.R$",
+    "(^|/)requirements\\.R$",
     "(^|/)go\\.(mod|sum)$",
+    "(^|/)vendor/modules\\.txt$",
     "(^|/)Cargo\\.(toml|lock)$",
     "(^|/)composer\\.(json|lock)$",
-    "(^|/)Gemfile(\\.lock)?$",
     "(^|/)mix\\.(exs|lock)$",
-    "(^|/)project\\.clj$",
-    "(^|/)deps\\.edn$",
     "(^|/)rebar\\.config(\\.lock)?$",
+    "(^|/)gleam\\.toml$",
+    "(^|/)gleam\\.lock$",
     "(^|/)packages\\.config$",
     "(^|/)Directory\\.Packages\\.props$",
+    "(^|/)Directory\\.Build\\.props$",
+    "(^|/)global\\.json$",
     "(^|/)paket\\.(dependencies|lock)$",
-    "(^|/)\\.github/dependabot\\.ya?ml$",
-    "(^|/)renv\\.lock$",
-    "(^|/)DESCRIPTION$",
-    "\\.csproj$"
+    "(^|/)packages\\.lock\\.json$",
+    "(^|/)vcpkg\\.json$",
+    "(^|/)vcpkg-configuration\\.json$",
+    "(^|/)conanfile\\.(txt|py)$",
+    "(^|/)conan\\.lock$",
+    "(^|/)CMakeLists\\.txt$",
+    "(^|/)cmake/.*\\.cmake$",
+    "(^|/)Makefile$",
+    "(^|/)pubspec\\.(yaml|lock)$",
+    "(^|/)Package\\.resolutions$",
+    "(^|/)shard\\.ya?ml$",
+    "(^|/)shard\\.lock$",
+    "(^|/)stack\\.ya?ml$",
+    "(^|/)cabal\\.project(\\.freeze)?$",
+    "(^|/)elm\\.json$",
+    "(^|/)deno\\.jsonc?$",
+    "(^|/)import_map\\.json$",
+    "(^|/)deps\\.ts$",
+    "(^|/)flake\\.(nix|lock)$",
+    "(^|/)shell\\.nix$",
+    "(^|/)default\\.nix$",
+    "(^|/)requirements\\.ya?ml$",
+    "(^|/)Chart\\.ya?ml$",
+    "(^|/)Chart\\.lock$",
+    "(^|/)kustomization\\.ya?ml$",
+    "(^|/)Tiltfile$",
+    "(^|/)Jenkinsfile$",
+    "\\.(cs|fs|vb)proj$",
+    "\\.props$",
+    "\\.targets$",
+    "\\.nuspec$"
   )
 }
 
@@ -893,8 +964,18 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     requireNamespace("parallel", quietly = TRUE)
 
   use_existing_cluster <- !is.null(cluster) && inherits(cluster, "cluster") && n > 1L
+  export_commit_detail_helpers <- function(cl) {
+    helper_fns <- c(".gh_commit_detail_safe")
+    helper_env <- new.env(parent = emptyenv())
+    for (nm in helper_fns) {
+      assign(nm, get(nm, mode = "function", inherits = TRUE), envir = helper_env)
+    }
+    parallel::clusterExport(cl, varlist = helper_fns, envir = helper_env)
+    invisible(TRUE)
+  }
 
   if (use_existing_cluster) {
+    export_commit_detail_helpers(cluster)
     return(parallel::parLapply(
       cl = cluster,
       X = as.list(commit_shas),
@@ -913,6 +994,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   w <- min(as.integer(workers), n)
   cl <- parallel::makeCluster(w)
   on.exit(parallel::stopCluster(cl), add = TRUE)
+  export_commit_detail_helpers(cl)
 
   parallel::parLapply(
     cl = cl,
@@ -1110,6 +1192,9 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   scanned_n <- 0L
   skipped_n <- 0L
   failed_n <- 0L
+  suitable_n <- 0L
+  fallback_commit <- NULL
+  fallback_summary_index <- NA_integer_
   emit_progress <- function(force = FALSE) {
     if (!isTRUE(debug)) return(invisible(NULL))
     if (!isTRUE(force) && (processed_n %% debug_repo_every != 0L) && processed_n != total_commits) {
@@ -1145,6 +1230,15 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     commit_author <- .osv_to_scalar(cmt$author$login)
     if (!.osv_non_empty(commit_author)) {
       commit_author <- .osv_to_scalar(cmt$commit$author$name)
+    }
+    if (is.null(fallback_commit) && .osv_non_empty(sha)) {
+      fallback_commit <- list(
+        commit_idx = commit_idx,
+        sha = sha,
+        date = commit_date,
+        message = commit_message,
+        author = commit_author
+      )
     }
 
     detail_info <- if (commit_idx <= length(commit_details)) commit_details[[commit_idx]] else NULL
@@ -1189,11 +1283,17 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
           status = "skipped_no_dependency_changes",
           stringsAsFactors = FALSE
         )
+      if (!is.null(fallback_commit) &&
+          identical(fallback_commit$sha, sha) &&
+          is.na(fallback_summary_index)) {
+        fallback_summary_index <- length(summary_rows)
+      }
       processed_n <- processed_n + 1L
       emit_progress()
       next
     }
 
+    suitable_n <- suitable_n + 1L
     snapshot <- tryCatch(
       .download_repo_snapshot(repo_full, sha = sha, token = token, temp_root = temp_root),
       error = function(e) {
@@ -1298,6 +1398,105 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     }
     processed_n <- processed_n + 1L
     emit_progress()
+  }
+
+  if (identical(suitable_n, 0L) && !isTRUE(force_scan) && !is.null(fallback_commit)) {
+    .debug_log(debug, "repo", repo_full, ": no dependency-changing commits found; scanning latest commit fallback=", fallback_commit$sha)
+    snapshot <- tryCatch(
+      .download_repo_snapshot(repo_full, sha = fallback_commit$sha, token = token, temp_root = temp_root),
+      error = function(e) {
+        append_error(fallback_commit$sha, "fallback_download_snapshot", conditionMessage(e))
+        NULL
+      }
+    )
+
+    scan <- NULL
+    if (!is.null(snapshot)) {
+      scan <- tryCatch(
+        scan_path_with_syft_and_osv(
+          target_path = snapshot$repo_dir,
+          osv_db = osv_db_obj,
+          syft_path = syft_resolved,
+          include_uncertain = include_uncertain,
+          keep_sbom = FALSE,
+          syft_timeout_sec = syft_timeout_sec,
+          syft_excludes = syft_excludes
+        ),
+        error = function(e) {
+          append_error(fallback_commit$sha, "fallback_syft_or_osv_scan", conditionMessage(e))
+          NULL
+        }
+      )
+
+      if (!isTRUE(keep_snapshots)) {
+        unlink(snapshot$work_dir, recursive = TRUE, force = TRUE)
+      }
+    }
+
+    vuln_count <- 0L
+    scan_commit_rows <- data.frame()
+    if (!is.null(scan) && is.data.frame(scan$vulnerabilities) && nrow(scan$vulnerabilities) > 0L) {
+      vulns <- scan$vulnerabilities
+      vulns$repository <- repo_full
+      vulns$sha <- fallback_commit$sha
+      vulns$commit_date <- fallback_commit$date
+      vulns$commit_message <- fallback_commit$message
+      vulns$dependency_files <- ""
+      scan_commit_rows <- vulns
+      vulnerability_rows[[length(vulnerability_rows) + 1L]] <- vulns
+      vuln_count <- nrow(vulns)
+    }
+
+    if (!is.null(scan)) {
+      key_rows <- list()
+      keys <- character(0)
+      if (is.data.frame(scan_commit_rows) && nrow(scan_commit_rows) > 0L) {
+        for (ri in seq_len(nrow(scan_commit_rows))) {
+          row_i <- scan_commit_rows[ri, , drop = FALSE]
+          key_i <- .vuln_lifecycle_key(row_i)
+          if (!key_i %in% names(key_rows)) {
+            key_rows[[key_i]] <- row_i
+          }
+          keys <- c(keys, key_i)
+        }
+      }
+      scan_snapshots[[length(scan_snapshots) + 1L]] <- list(
+        order = fallback_commit$commit_idx,
+        sha = fallback_commit$sha,
+        date = fallback_commit$date,
+        message = fallback_commit$message,
+        author = fallback_commit$author,
+        dependency_files = "",
+        keys = unique(keys),
+        key_rows = key_rows
+      )
+    }
+
+    fallback_summary <- data.frame(
+      repository = repo_full,
+      sha = fallback_commit$sha,
+      date = fallback_commit$date,
+      message = fallback_commit$message,
+      commit_author = fallback_commit$author,
+      scanned = !is.null(scan),
+      dependency_files = "",
+      vulnerability_count = if (is.null(scan)) NA_integer_ else as.integer(vuln_count),
+      status = if (is.null(scan)) "fallback_latest_commit_scan_failed" else "scanned_latest_commit_fallback",
+      stringsAsFactors = FALSE
+    )
+
+    if (!is.na(fallback_summary_index) && fallback_summary_index <= length(summary_rows)) {
+      summary_rows[[fallback_summary_index]] <- fallback_summary
+      skipped_n <- max(0L, skipped_n - 1L)
+    } else {
+      summary_rows[[length(summary_rows) + 1L]] <- fallback_summary
+    }
+
+    if (!is.null(scan)) {
+      scanned_n <- scanned_n + 1L
+    } else {
+      failed_n <- failed_n + 1L
+    }
   }
   emit_progress(force = TRUE)
 

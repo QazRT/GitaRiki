@@ -4,6 +4,8 @@ get_github_user_info <- function(profile,
                                  token = NULL,
                                  include_commit_stats = FALSE,
                                  max_commits = 1000,
+                                 collect_commits = TRUE,
+                                 commit_workers = NULL,
                                  conn = NULL) {
   if (is.null(conn)) {
     stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
@@ -22,6 +24,29 @@ get_github_user_info <- function(profile,
   library(httr)
   
   `%||%` <- function(x, y) if (is.null(x)) y else x
+
+  resolve_commit_workers <- function(repo_count, override = NULL) {
+    repo_count <- suppressWarnings(as.integer(repo_count))
+    if (is.na(repo_count) || repo_count < 1L) {
+      return(1L)
+    }
+
+    raw_value <- if (!is.null(override)) {
+      as.character(override[[1]])
+    } else {
+      env_names <- c("GITHOUND_COMMIT_WORKERS", "GITHOUND_COMMIT_COLLECTION_WORKERS")
+      values <- Sys.getenv(env_names, unset = "")
+      values <- values[nzchar(values)]
+      if (length(values) > 0L) values[[1L]] else ""
+    }
+
+    workers <- suppressWarnings(as.integer(raw_value))
+    if (is.na(workers) || workers < 1L) {
+      workers <- 1L
+    }
+
+    max(1L, min(workers, repo_count))
+  }
   
   extract_github_username <- function(input) {
     if (grepl("^[a-zA-Z0-9_-]+$", input)) {
@@ -317,6 +342,156 @@ get_github_user_info <- function(profile,
     
     commits_accumulator <- list()
     commit_counter <- 0L
+
+    commit_worker_count <- resolve_commit_workers(length(repo_list), commit_workers)
+    if (commit_worker_count > 1L && requireNamespace("parallel", quietly = TRUE)) {
+      message(
+        "Collecting user-info commits in parallel: ",
+        commit_worker_count,
+        " workers for ",
+        length(repo_list),
+        " repositories."
+      )
+
+      cl <- parallel::makeCluster(commit_worker_count)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
+      parallel::clusterEvalQ(cl, {
+        library(gh)
+        library(dplyr)
+        library(purrr)
+        library(httr)
+        NULL
+      })
+      parallel::clusterExport(
+        cl,
+        varlist = c("username", "token", "include_commit_stats", "%||%"),
+        envir = environment()
+      )
+      repo_results <- parallel::parLapply(
+        cl = cl,
+        X = as.list(repo_list),
+        fun = function(repo) {
+          tryCatch({
+            search_items <- tryCatch({
+              search_result <- gh::gh(
+                "GET /search/commits",
+                q = paste0("author:", username, " repo:", repo),
+                per_page = 100,
+                .limit = Inf,
+                .token = token,
+                .progress = FALSE
+              )
+              search_result$items %||% list()
+            }, error = function(e) {
+              NULL
+            })
+
+            repo_df <- if (length(search_items) > 0) {
+              map_df(search_items, function(cmt) {
+                data.frame(
+                  repository = repo,
+                  sha = cmt$sha %||% NA,
+                  date = cmt$commit$author$date %||% NA,
+                  message = cmt$commit$message %||% NA,
+                  url = cmt$html_url %||% NA,
+                  stringsAsFactors = FALSE
+                )
+              })
+            } else {
+              repo_commits <- tryCatch({
+                gh::gh(
+                  "GET /repos/{repo}/commits",
+                  repo = repo,
+                  author = username,
+                  .limit = Inf,
+                  .token = token,
+                  .progress = FALSE
+                )
+              }, error = function(e) {
+                NULL
+              })
+
+              if (is.null(repo_commits) || length(repo_commits) == 0) {
+                data.frame()
+              } else {
+                map_df(repo_commits, function(cmt) {
+                  data.frame(
+                    repository = repo,
+                    sha = cmt$sha %||% NA,
+                    date = cmt$commit$author$date %||% NA,
+                    message = cmt$commit$message %||% NA,
+                    url = cmt$html_url %||% NA,
+                    stringsAsFactors = FALSE
+                  )
+                })
+              }
+            } %>%
+              distinct(repository, sha, .keep_all = TRUE)
+
+            if (nrow(repo_df) > 0 && isTRUE(include_commit_stats)) {
+              stats_df <- map_df(repo_df$sha, function(sha) {
+                tryCatch({
+                  cmt_detail <- gh::gh(
+                    "GET /repos/{repo}/commits/{sha}",
+                    repo = repo,
+                    sha = sha,
+                    .token = token
+                  )
+                  stats <- cmt_detail$stats %||% list(additions = 0, deletions = 0, total = 0)
+                  data.frame(
+                    repository = repo,
+                    sha = sha,
+                    additions = stats$additions %||% 0,
+                    deletions = stats$deletions %||% 0,
+                    changes = stats$total %||% 0,
+                    stringsAsFactors = FALSE
+                  )
+                }, error = function(e) {
+                  data.frame(
+                    repository = repo,
+                    sha = sha,
+                    additions = NA,
+                    deletions = NA,
+                    changes = NA,
+                    stringsAsFactors = FALSE
+                  )
+                })
+              }) %>%
+                distinct(repository, sha, .keep_all = TRUE)
+
+              repo_df <- repo_df %>%
+                left_join(stats_df, by = c("repository", "sha"))
+            }
+
+            list(repo = repo, commits = repo_df, error = NULL)
+          }, error = function(e) {
+            list(repo = repo, commits = data.frame(), error = conditionMessage(e))
+          })
+        }
+      )
+
+      for (result in repo_results) {
+        if (!is.null(result$error) && nzchar(result$error)) {
+          warning("Error while collecting commits for ", result$repo, ": ", result$error)
+          next
+        }
+        if (is.data.frame(result$commits) && nrow(result$commits) > 0L) {
+          commits_accumulator[[result$repo]] <- result$commits
+        }
+      }
+
+      if (length(commits_accumulator) == 0) {
+        return(data.frame())
+      }
+
+      return(
+        bind_rows(commits_accumulator) %>%
+          distinct(repository, sha, .keep_all = TRUE) %>%
+          head(max_commits)
+      )
+    } else if (commit_worker_count > 1L) {
+      warning("Package 'parallel' is not available. Falling back to sequential commit collection.")
+    }
     
     for (repo in repo_list) {
       if (commit_counter >= max_commits) {
@@ -488,7 +663,9 @@ get_github_user_info <- function(profile,
   commits_df <- data.frame()
   activity_summary <- data.frame()
   
-  if (is.null(token)) {
+  if (!isTRUE(collect_commits)) {
+    message("Skipping commit search in get_github_user_info(): collect_commits = FALSE.")
+  } else if (is.null(token)) {
     warning("Поиск коммитов требует аутентификации. Без токена эта часть будет пропущена.")
   } else {
     tryCatch({
