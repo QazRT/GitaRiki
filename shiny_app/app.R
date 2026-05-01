@@ -179,18 +179,37 @@ registration_screen <- function() {
       passwordInput("register_password", "Пароль", placeholder = "Минимум 6 символов"),
       textInput("register_nickname", "Ник", placeholder = "Ваш ник в GitHound"),
       actionButton("submit_registration", "Создать аккаунт", class = "run-button"),
+      actionButton("github_login", "Войти через GitHub", class = "menu-button secondary-button github-login-button"),
       actionButton("back_to_landing", "Назад", class = "menu-button secondary-button")
     )
   )
 }
 
 login_screen <- function() {
+  github_icon <- HTML(
+    "<svg viewBox='0 0 16 16' aria-hidden='true' class='social-login-icon'><path fill='currentColor' d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z'/></svg>"
+  )
+
   div(
     class = "home page-wide",
     brand_block(),
     div(
-      class = "form",
+      class = "form login-form",
       h2(class = "section-title", "Вход"),
+      div(
+        class = "social-login-block",
+        div(class = "social-login-title", "Войти через"),
+        div(
+          class = "social-login-row",
+          actionButton(
+            "github_login",
+            tagList(github_icon, span(class = "social-login-text", "GitHub")),
+            class = "social-login-button github-login-button",
+            title = "Войти через GitHub"
+          )
+        )
+      ),
+      div(class = "login-divider", span("или")),
       textInput("login_email", "Почта", placeholder = "you@example.com"),
       passwordInput("login_password", "Пароль", placeholder = "Введите пароль"),
       checkboxInput("remember_me", "Запомнить меня", value = FALSE),
@@ -259,6 +278,7 @@ account_screen <- function(nickname = "Профиль", selected_avatar = "egypt
         actionButton("toggle_avatars", "Выбрать стандартное фото", class = "menu-button secondary-button")
       ),
       passwordInput("account_token", "GitHub токен", value = github_token, placeholder = "Введите токен для анализа"),
+      uiOutput("account_token_status"),
       uiOutput("account_avatar_picker"),
       actionButton("save_account", "Сохранить профиль", class = "run-button"),
       actionButton("go_analysis", "Перейти к анализу", class = "menu-button secondary-button")
@@ -267,13 +287,14 @@ account_screen <- function(nickname = "Профиль", selected_avatar = "egypt
   )
 }
 
-set_loading_screen <- function(target) {
+set_loading_screen <- function(target, protocol_type = "set") {
+  protocol_label <- archive_protocol_label(protocol_type)
   div(
     class = "home set-loading-page",
     brand_block(),
     div(
       class = "form set-loading-form",
-      h2(class = "section-title", paste("Протокол Сет:", target)),
+      h2(class = "section-title", paste("Протокол", protocol_label, ":", target)),
       uiOutput("set_progress_ui"),
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
     )
@@ -286,6 +307,18 @@ set_table_ui <- function(df) {
   }
 
   copy_commit_at_date <- attr(df, "copy_commit_at_date", exact = TRUE)
+  if (is.null(copy_commit_at_date) &&
+      ncol(df) >= 10L &&
+      "OSV ID" %in% names(df) &&
+      any(grepl("[[:xdigit:]]{7,}", as.character(df[[6L]])), na.rm = TRUE)) {
+    introduced_commits <- df[[6L]]
+    fixed_commits <- df[[9L]]
+    df <- df[, -c(6L, 9L), drop = FALSE]
+    copy_commit_at_date <- list(
+      list(date_col = 6L, commits = introduced_commits),
+      list(date_col = 8L, commits = fixed_commits)
+    )
+  }
   if (is.null(copy_commit_at_date) &&
       ncol(df) >= 9L &&
       "OSV ID" %in% names(df) &&
@@ -300,6 +333,64 @@ set_table_ui <- function(df) {
     introduced_commits <- df[[5L]]
     df <- df[, -c(5L, 8L), drop = FALSE]
     copy_commit_at_date <- list(date_col = 5L, commits = introduced_commits)
+  }
+  copy_commit_mappings <- if (is.list(copy_commit_at_date) && !is.null(copy_commit_at_date$mappings)) {
+    copy_commit_at_date$mappings
+  } else if (is.list(copy_commit_at_date) && !is.null(copy_commit_at_date$date_col)) {
+    list(copy_commit_at_date)
+  } else if (is.list(copy_commit_at_date)) {
+    copy_commit_at_date
+  } else {
+    list()
+  }
+  copy_commit_mappings <- Filter(function(mapping) {
+    is.list(mapping) && !is.null(mapping[["date_col"]])
+  }, copy_commit_mappings)
+  commit_mapping_for_col <- function(col_index) {
+    matches <- Filter(function(mapping) {
+      identical(as.integer(col_index), as.integer(mapping[["date_col"]]))
+    }, copy_commit_mappings)
+    if (length(matches) > 0L) matches[[1L]] else NULL
+  }
+
+  full_text_mappings <- list()
+  full_text_col <- function(candidates) {
+    found <- which(names(df) %in% candidates)
+    if (length(found) > 0L) found[[1L]] else NA_integer_
+  }
+  full_summary_col <- full_text_col(c("Описание полностью", "Full description", "Full summary"))
+  full_details_col <- full_text_col(c("Full details", "Details"))
+  full_aliases_col <- full_text_col(c("Full aliases", "Aliases"))
+  full_references_col <- full_text_col(c("Full references", "References"))
+  description_col <- which(names(df) %in% c("Описание", "Description"))
+  hidden_full_cols <- c(full_summary_col, full_details_col, full_aliases_col, full_references_col)
+  hidden_full_cols <- unique(hidden_full_cols[!is.na(hidden_full_cols)])
+  if (length(hidden_full_cols) > 0L && length(description_col) > 0L) {
+    full_values <- list(
+      summary = if (!is.na(full_summary_col)) as.character(df[[full_summary_col]]) else rep("", nrow(df)),
+      details = if (!is.na(full_details_col)) as.character(df[[full_details_col]]) else rep("", nrow(df)),
+      aliases = if (!is.na(full_aliases_col)) as.character(df[[full_aliases_col]]) else rep("", nrow(df)),
+      references = if (!is.na(full_references_col)) as.character(df[[full_references_col]]) else rep("", nrow(df))
+    )
+    df <- df[, -hidden_full_cols, drop = FALSE]
+    description_col <- which(names(df) %in% c("Описание", "Description"))
+    if (length(description_col) > 0L) {
+      title_col <- which(names(df) %in% c("Vuln ID", "OSV ID"))
+      full_text_mappings <- list(list(
+        text_col = description_col[[1L]],
+        values = full_values$summary,
+        details = full_values$details,
+        aliases = full_values$aliases,
+        references = full_values$references,
+        title_col = if (length(title_col) > 0L) title_col[[1L]] else NA_integer_
+      ))
+    }
+  }
+  full_text_mapping_for_col <- function(col_index) {
+    matches <- Filter(function(mapping) {
+      identical(as.integer(col_index), as.integer(mapping[["text_col"]]))
+    }, full_text_mappings)
+    if (length(matches) > 0L) matches[[1L]] else NULL
   }
   df <- utils::head(df, 12L)
   return(div(
@@ -317,14 +408,14 @@ set_table_ui <- function(df) {
             if (is.na(display_value) || !nzchar(display_value)) {
               display_value <- "\u2014"
             }
-            if (is.list(copy_commit_at_date) &&
-                identical(j, copy_commit_at_date$date_col)) {
-              commit <- if (!is.null(copy_commit_at_date$commits) &&
-                            length(copy_commit_at_date$commits) >= i) {
-                as.character(copy_commit_at_date$commits[[i]])
-              } else if (!is.null(copy_commit_at_date$commit_col) &&
-                         copy_commit_at_date$commit_col %in% seq_along(df)) {
-                as.character(df[[copy_commit_at_date$commit_col]][[i]])
+            commit_mapping <- commit_mapping_for_col(j)
+            if (is.list(commit_mapping)) {
+              commit <- if (!is.null(commit_mapping[["commits"]]) &&
+                            length(commit_mapping[["commits"]]) >= i) {
+                as.character(commit_mapping[["commits"]][[i]])
+              } else if (!is.null(commit_mapping[["commit_col"]]) &&
+                         commit_mapping[["commit_col"]] %in% seq_along(df)) {
+                as.character(df[[commit_mapping[["commit_col"]]]][[i]])
               } else {
                 ""
               }
@@ -339,7 +430,56 @@ set_table_ui <- function(df) {
                       class = "copy-commit-button",
                       `data-commit` = commit,
                       title = commit,
-                      "👁"
+                      "SHA"
+                    )
+                  )
+                ))
+              }
+            }
+            full_text_mapping <- full_text_mapping_for_col(j)
+            if (is.list(full_text_mapping) &&
+                !is.null(full_text_mapping[["values"]]) &&
+                length(full_text_mapping[["values"]]) >= i) {
+              full_summary <- as.character(full_text_mapping[["values"]][[i]])
+              full_details <- if (!is.null(full_text_mapping[["details"]]) &&
+                                  length(full_text_mapping[["details"]]) >= i) {
+                as.character(full_text_mapping[["details"]][[i]])
+              } else {
+                ""
+              }
+              full_aliases <- if (!is.null(full_text_mapping[["aliases"]]) &&
+                                  length(full_text_mapping[["aliases"]]) >= i) {
+                as.character(full_text_mapping[["aliases"]][[i]])
+              } else {
+                ""
+              }
+              full_references <- if (!is.null(full_text_mapping[["references"]]) &&
+                                     length(full_text_mapping[["references"]]) >= i) {
+                as.character(full_text_mapping[["references"]][[i]])
+              } else {
+                ""
+              }
+              full_title <- ""
+              title_col <- suppressWarnings(as.integer(full_text_mapping[["title_col"]]))
+              if (!is.na(title_col) && title_col %in% seq_along(df)) {
+                full_title <- as.character(df[[title_col]][[i]])
+              }
+              has_full_text <- any(nzchar(trimws(c(full_summary, full_details, full_aliases, full_references))), na.rm = TRUE)
+              if (isTRUE(has_full_text)) {
+                return(tags$td(
+                  div(
+                    class = "description-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "full-text-button",
+                      `data-title` = full_title,
+                      `data-full-summary` = full_summary,
+                      `data-full-details` = full_details,
+                      `data-full-aliases` = full_aliases,
+                      `data-full-references` = full_references,
+                      title = "Показать полное описание",
+                      "Подробно"
                     )
                   )
                 ))
@@ -569,6 +709,100 @@ boot_screen <- function() {
 
 archive_status_label <- function(status) {
   switch(status %||% "active", active = "активен", archived = "заархивировано", deleted = "удален", status)
+}
+
+github_oauth_redirect_uri <- function(session) {
+  protocol <- session$clientData$url_protocol %||% "http:"
+  hostname <- session$clientData$url_hostname %||% "127.0.0.1"
+  port <- session$clientData$url_port %||% ""
+  pathname <- session$clientData$url_pathname %||% "/"
+  if (!nzchar(pathname)) pathname <- "/"
+  port_part <- if (nzchar(port)) paste0(":", port) else ""
+  paste0(protocol, "//", hostname, port_part, pathname)
+}
+
+github_oauth_authorize_url <- function(state, redirect_uri) {
+  client_id <- githound_env("GITHUB_CLIENT_ID", required = TRUE)
+  if (grepl("^your_|^ваш_|placeholder|oauth_client_id", client_id, ignore.case = TRUE)) {
+    stop("Заполните GITHUB_CLIENT_ID и GITHUB_CLIENT_SECRET реальными значениями OAuth App из GitHub.", call. = FALSE)
+  }
+  scope <- githound_env("GITHUB_OAUTH_SCOPE", required = FALSE)
+  if (!nzchar(scope)) {
+    scope <- "read:user user:email public_repo"
+  }
+  query <- paste0(
+    "client_id=", utils::URLencode(client_id, reserved = TRUE),
+    "&redirect_uri=", utils::URLencode(redirect_uri, reserved = TRUE),
+    "&scope=", utils::URLencode(scope, reserved = TRUE),
+    "&state=", utils::URLencode(state, reserved = TRUE)
+  )
+  paste0("https://github.com/login/oauth/authorize?", query)
+}
+
+github_api_get <- function(url, access_token) {
+  response <- httr::GET(
+    url,
+    httr::add_headers(
+      Authorization = paste("Bearer", access_token),
+      Accept = "application/vnd.github+json",
+      `User-Agent` = "GitHound-Shiny"
+    )
+  )
+  if (httr::http_error(response)) {
+    stop("GitHub API вернул ошибку: ", httr::status_code(response), call. = FALSE)
+  }
+  jsonlite::fromJSON(httr::content(response, as = "text", encoding = "UTF-8"), simplifyVector = FALSE)
+}
+
+complete_github_oauth <- function(code, redirect_uri) {
+  if (!requireNamespace("httr", quietly = TRUE) || !requireNamespace("jsonlite", quietly = TRUE)) {
+    stop("Для входа через GitHub нужны R-пакеты httr и jsonlite.", call. = FALSE)
+  }
+
+  client_id <- githound_env("GITHUB_CLIENT_ID", required = TRUE)
+  client_secret <- githound_env("GITHUB_CLIENT_SECRET", required = TRUE)
+  if (grepl("^your_|^ваш_|placeholder|oauth_client_id", client_id, ignore.case = TRUE) ||
+      grepl("^your_|^ваш_|placeholder|oauth_client_secret", client_secret, ignore.case = TRUE)) {
+    stop("Заполните GITHUB_CLIENT_ID и GITHUB_CLIENT_SECRET реальными значениями OAuth App из GitHub.", call. = FALSE)
+  }
+
+  response <- httr::POST(
+    "https://github.com/login/oauth/access_token",
+    body = list(
+      client_id = client_id,
+      client_secret = client_secret,
+      code = code,
+      redirect_uri = redirect_uri
+    ),
+    encode = "form",
+    httr::accept_json()
+  )
+
+  token_payload <- jsonlite::fromJSON(httr::content(response, as = "text", encoding = "UTF-8"), simplifyVector = FALSE)
+  access_token <- token_payload$access_token %||% ""
+  if (httr::http_error(response) || !nzchar(access_token)) {
+    stop(token_payload$error_description %||% "GitHub не выдал OAuth-токен.", call. = FALSE)
+  }
+
+  user <- github_api_get("https://api.github.com/user", access_token)
+  email <- user$email %||% ""
+  if (!nzchar(email)) {
+    emails <- tryCatch(github_api_get("https://api.github.com/user/emails", access_token), error = function(e) list())
+    primary <- Filter(function(item) isTRUE(item$primary) && isTRUE(item$verified), emails)
+    if (length(primary) > 0L) {
+      email <- primary[[1]]$email %||% ""
+    }
+  }
+
+  list(
+    id = as.character(user$id %||% ""),
+    login = user$login %||% "",
+    name = user$name %||% "",
+    email = email,
+    access_token = access_token,
+    token_name = "GitHoundToken",
+    token_expires_at = Sys.time() + 30 * 24 * 60 * 60
+  )
 }
 
 archive_protocol_label <- function(protocol_type) {
@@ -1030,11 +1264,29 @@ ui <- fluidPage(
         return $('#remember_me').is(':checked');
       }
 
+      function getGithubOAuthState() {
+        try {
+          return getCookie('githound_github_oauth_state') ||
+            window.localStorage.getItem('githound_github_oauth_state') ||
+            '';
+        } catch (error) {
+          return getCookie('githound_github_oauth_state') || '';
+        }
+      }
+
+      function pushGithubOAuthState() {
+        if (!window.Shiny) return;
+        Shiny.setInputValue('github_oauth_state_cookie', getGithubOAuthState(), {priority: 'event'});
+      }
+
       $(document).ready(function() {
         clearLegacyRememberedLogin();
         fillRememberedLogin();
         setupLoginAutofill();
         setTimeout(pushRememberToken, 0);
+        setTimeout(pushGithubOAuthState, 0);
+        setTimeout(pushGithubOAuthState, 150);
+        setTimeout(pushGithubOAuthState, 500);
         if (window.Shiny) {
           Shiny.setInputValue('theme_mode', document.body.classList.contains('heaven-theme') ? 'heaven' : 'hell', {priority: 'event'});
         }
@@ -1059,12 +1311,49 @@ ui <- fluidPage(
         fillRememberedLogin();
       });
 
+      Shiny.addCustomMessageHandler('startGithubOAuth', function(data) {
+        if (!data || !data.url || !data.state) return;
+        setCookie('githound_github_oauth_state', data.state, 10 * 60);
+        try {
+          window.localStorage.setItem('githound_github_oauth_state', data.state);
+        } catch (error) {}
+        window.location.href = data.url;
+      });
+
+      Shiny.addCustomMessageHandler('finishGithubOAuth', function(data) {
+        setCookie('githound_github_oauth_state', '', 0);
+        try {
+          window.localStorage.removeItem('githound_github_oauth_state');
+        } catch (error) {}
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      });
+
+      function renderSetProgressLabel(label) {
+        var target = $('#set_progress_label');
+        if (!target.length) return;
+        var text = String(label || '');
+        var parts = text.split('\\n');
+        target.empty();
+        $('<span/>', {
+          'class': 'set-progress-stage',
+          text: parts[0] || ''
+        }).appendTo(target);
+        if (parts.length > 1) {
+          $('<span/>', {
+            'class': 'set-progress-working',
+            text: parts.slice(1).join('\\n')
+          }).appendTo(target);
+        }
+      }
+
       Shiny.addCustomMessageHandler('setSetProgress', function(data) {
         var value = Math.max(0, Math.min(100, parseInt(data.value || 0, 10)));
         $('#set_progress_track').css('--set-progress', value + '%');
         $('#set_progress_percent').text(value + '%');
         if (data.label) {
-          $('#set_progress_label').text(data.label);
+          renderSetProgressLabel(data.label);
         }
       });
 
@@ -1101,6 +1390,19 @@ ui <- fluidPage(
             button.removeClass('copied').text(previous);
           }, 900);
         });
+      });
+
+      $(document).on('click', '.full-text-button', function() {
+        if (!window.Shiny) return;
+        var button = $(this);
+        Shiny.setInputValue('show_full_text', {
+          title: String(button.attr('data-title') || 'Описание уязвимости'),
+          summary: String(button.attr('data-full-summary') || ''),
+          details: String(button.attr('data-full-details') || ''),
+          aliases: String(button.attr('data-full-aliases') || ''),
+          references: String(button.attr('data-full-references') || ''),
+          nonce: Date.now()
+        }, {priority: 'event'});
       });
 
       $(document).on('click', '#theme_hell', function() {
@@ -1301,7 +1603,7 @@ ui <- fluidPage(
         position: fixed;
         top: 18px;
         right: 18px;
-        z-index: 2;
+        z-index: 3;
         display: flex;
         gap: 6px;
         padding: 6px;
@@ -1347,6 +1649,81 @@ ui <- fluidPage(
         background: linear-gradient(135deg, #fff4bc, #83d5ef);
         color: #1f2a34;
         box-shadow: 0 0 22px rgba(217, 165, 46, 0.3);
+      }
+
+      .github-rate-card {
+        position: fixed;
+        top: 72px;
+        right: 18px;
+        z-index: 3;
+        width: min(236px, calc(100vw - 36px));
+        padding: 9px 10px 10px;
+        border: 1px solid rgba(255, 43, 52, 0.34);
+        border-radius: 8px;
+        background: rgba(10, 1, 2, 0.78);
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+        color: var(--ink);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
+      }
+
+      body.heaven-theme .github-rate-card {
+        border-color: rgba(125, 203, 235, 0.6);
+        background: rgba(255, 255, 255, 0.76);
+        box-shadow: 0 14px 36px rgba(120, 154, 174, 0.24);
+      }
+
+      .github-rate-top {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 7px;
+      }
+
+      .github-rate-title {
+        font-size: 12px;
+        font-weight: 900;
+        color: var(--muted);
+      }
+
+      .github-rate-value {
+        font-size: 13px;
+        font-weight: 900;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+
+      .github-rate-track {
+        position: relative;
+        overflow: hidden;
+        height: 8px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .github-rate-fill {
+        width: var(--github-rate-percent, 0%);
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #e01824, #f3b64d);
+        transition: width 280ms ease;
+      }
+
+      body.heaven-theme .github-rate-fill {
+        background: linear-gradient(90deg, #83d5ef, #d9a52e);
+      }
+
+      .github-rate-meta {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .account-menu {
@@ -1395,8 +1772,7 @@ ui <- fluidPage(
           box-shadow var(--theme-duration) var(--theme-ease);
       }
 
-      .account-menu:hover .account-menu-panel,
-      .account-menu:focus-within .account-menu-panel {
+      .account-menu.account-menu-open .account-menu-panel {
         opacity: 1;
         pointer-events: auto;
         transform: translateY(0);
@@ -1561,6 +1937,112 @@ ui <- fluidPage(
 
       .menu-form {
         text-align: center;
+      }
+
+      .login-form {
+        gap: 16px;
+      }
+
+      .social-login-block {
+        display: grid;
+        gap: 10px;
+        justify-items: center;
+        padding: 4px 0 2px;
+      }
+
+      .social-login-title {
+        color: var(--muted);
+        font-size: 15px;
+        font-weight: 800;
+        text-align: center;
+        transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .social-login-row {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        width: 100%;
+      }
+
+      .social-login-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 56px;
+        height: 56px;
+        min-height: 56px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(8, 1, 2, 0.76);
+        color: var(--ink);
+        box-shadow: 4px 4px 0 var(--button-shadow), 0 0 22px rgba(224, 24, 36, 0.18);
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease),
+          transform 140ms ease;
+      }
+
+      .social-login-button:hover,
+      .social-login-button:focus {
+        color: var(--button-ink);
+        border-color: var(--accent-hover);
+        background: rgba(224, 24, 36, 0.18);
+        transform: translateY(-1px);
+      }
+
+      .social-login-icon {
+        width: 26px;
+        height: 26px;
+      }
+
+      .social-login-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
+      .login-divider {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 10px;
+        align-items: center;
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 800;
+        text-align: center;
+        transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .login-divider::before,
+      .login-divider::after {
+        content: '';
+        height: 1px;
+        background: var(--line);
+        opacity: 0.72;
+        transition: background-color var(--theme-duration) var(--theme-ease);
+      }
+
+      body.heaven-theme .social-login-button {
+        background: rgba(255, 255, 255, 0.9);
+        border-color: #8ecce3;
+        color: #1f2a34;
+        box-shadow: 4px 4px 0 rgba(120, 154, 174, 0.34),
+          0 0 22px rgba(217, 165, 46, 0.16);
+      }
+
+      body.heaven-theme .social-login-button:hover,
+      body.heaven-theme .social-login-button:focus {
+        background: #ffffff;
+        border-color: #d9a52e;
+        color: #1f2a34;
       }
 
       .section-title {
@@ -1787,10 +2269,26 @@ ui <- fluidPage(
       }
 
       .set-progress-label {
+        display: grid;
+        gap: 2px;
         color: var(--muted);
         font-size: 14px;
         font-weight: 700;
+        line-height: 1.45;
+        max-width: 100%;
+        overflow-wrap: anywhere;
         transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .set-progress-working {
+        color: rgba(255, 216, 160, 0.68);
+        font-size: 12px;
+        font-style: italic;
+        white-space: pre-line;
+      }
+
+      body.heaven-theme .set-progress-working {
+        color: rgba(67, 96, 115, 0.64);
       }
 
       .set-progress-track {
@@ -2203,11 +2701,18 @@ ui <- fluidPage(
         overflow-wrap: anywhere;
       }
 
+      .description-cell {
+        display: grid;
+        gap: 6px;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
       .copy-commit-button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 24px;
+        width: 34px;
         height: 22px;
         margin-left: 4px;
         padding: 0;
@@ -2239,6 +2744,106 @@ ui <- fluidPage(
 
       body.heaven-theme .copy-commit-button {
         background: rgba(211, 29, 29, 0.07);
+      }
+
+      .full-text-button {
+        justify-self: start;
+        min-height: 24px;
+        padding: 3px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1;
+        cursor: pointer;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          box-shadow var(--theme-duration) var(--theme-ease);
+      }
+
+      .full-text-button:hover,
+      .full-text-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      body.heaven-theme .full-text-button {
+        background: rgba(211, 29, 29, 0.07);
+      }
+
+      .full-text-modal-body {
+        max-height: min(62vh, 620px);
+        overflow-y: auto;
+        display: grid;
+        gap: 14px;
+      }
+
+      .full-text-modal-section {
+        display: grid;
+        gap: 6px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(224, 24, 36, 0.06);
+      }
+
+      .full-text-modal-section-title {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+
+      .full-text-modal-section-content {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.55;
+      }
+
+      .full-text-modal-plain {
+        white-space: pre-wrap;
+      }
+
+      .full-text-modal-section-content ul {
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      .full-text-modal-section-content li {
+        margin: 0;
+        padding: 0;
+      }
+
+      .full-text-modal-markdown p,
+      .full-text-modal-markdown ul,
+      .full-text-modal-markdown ol {
+        margin-top: 0;
+        margin-bottom: 8px;
+      }
+
+      .full-text-modal-markdown pre {
+        max-width: 100%;
+        overflow-x: auto;
+        padding: 8px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.26);
+      }
+
+      .full-text-modal-markdown code {
+        font-size: 0.92em;
+      }
+
+      .full-text-modal-link {
+        display: inline;
+        color: var(--accent);
+        overflow-wrap: anywhere;
+      }
+
+      body.heaven-theme .full-text-modal-section {
+        background: rgba(211, 29, 29, 0.05);
       }
 
       .set-plot-grid {
@@ -2699,12 +3304,21 @@ ui <- fluidPage(
 
       @media (max-width: 640px) {
         .container-fluid {
-          padding-top: 74px;
+          padding-top: 156px;
         }
 
         .account-menu {
           left: 12px;
           width: 190px;
+        }
+
+        .theme-switch {
+          right: 12px;
+        }
+
+        .github-rate-card {
+          right: 12px;
+          width: min(190px, calc(100vw - 24px));
         }
 
         .avatar-card {
@@ -2876,6 +3490,7 @@ ui <- fluidPage(
       "Ад"
     )
   ),
+  uiOutput("github_rate_limit_ui"),
   uiOutput("account_menu"),
   uiOutput("page")
 )
@@ -2898,18 +3513,107 @@ server <- function(input, output, session) {
   analysis_target <- reactiveVal(NULL)
   theme_mode <- reactiveVal("hell")
   set_report <- reactiveVal(NULL)
+  active_protocol <- reactiveVal("set")
   report_archive <- reactiveVal(list())
   archive_page <- reactiveVal(1L)
+  menu_open <- reactiveVal(FALSE)
   remember_token <- reactiveVal(NULL)
   remember_attempted <- reactiveVal(FALSE)
   remember_input_seen <- reactiveVal(FALSE)
+  github_oauth_processed <- reactiveVal(FALSE)
   set_progress <- reactiveValues(value = 0, label = "Ожидание запуска")
   account <- reactiveValues(
     email = NULL,
     nickname = NULL,
     avatar_id = "egypt_1",
-    github_token = ""
+    github_token = "",
+    github_token_name = "",
+    github_token_expires_at = NA_character_
   )
+  parse_github_token_expires_at <- function(value) {
+    value <- value %||% NA_character_
+    if (inherits(value, "POSIXt")) {
+      return(as.POSIXct(value, tz = "UTC"))
+    }
+    value <- trimws(as.character(value))
+    if (!nzchar(value) || is.na(value)) {
+      return(as.POSIXct(NA))
+    }
+    suppressWarnings(as.POSIXct(value, tz = "UTC"))
+  }
+  account_github_token_expired <- function() {
+    token <- trimws(account$github_token %||% "")
+    if (!nzchar(token)) {
+      return(FALSE)
+    }
+    expires_at <- parse_github_token_expires_at(account$github_token_expires_at)
+    !is.na(expires_at) && Sys.time() >= expires_at
+  }
+  account_github_token <- function() {
+    if (isTRUE(account_github_token_expired())) {
+      return("")
+    }
+    trimws(account$github_token %||% "")
+  }
+  apply_account_row <- function(row) {
+    account$email <- row$email[[1]]
+    account$nickname <- row$nickname[[1]]
+    account$avatar_id <- row$avatar_id[[1]]
+    account$github_token <- row$github_token[[1]] %||% ""
+    account$github_token_name <- if ("github_token_name" %in% names(row)) row$github_token_name[[1]] %||% "" else ""
+    account$github_token_expires_at <- if ("github_token_expires_at" %in% names(row)) {
+      row$github_token_expires_at[[1]] %||% NA_character_
+    } else {
+      NA_character_
+    }
+    invisible(TRUE)
+  }
+  github_rate_limit <- reactiveVal(list(
+    status = "loading",
+    remaining = NA_integer_,
+    limit = NA_integer_,
+    reset = NA_real_,
+    updated_at = Sys.time(),
+    source = "none",
+    error = NULL
+  ))
+
+  fetch_github_rate_limit <- function(token = "") {
+    token <- trimws(as.character(token %||% ""))
+    headers <- c(
+      Accept = "application/vnd.github+json",
+      `User-Agent` = "GitHound-Shiny"
+    )
+    if (nzchar(token)) {
+      headers <- c(headers, Authorization = paste("Bearer", token))
+    }
+
+    response <- httr::GET(
+      "https://api.github.com/rate_limit",
+      do.call(httr::add_headers, as.list(headers)),
+      httr::timeout(8)
+    )
+    text <- httr::content(response, as = "text", encoding = "UTF-8")
+    if (httr::http_error(response)) {
+      stop("GitHub /rate_limit returned HTTP ", httr::status_code(response), call. = FALSE)
+    }
+
+    payload <- jsonlite::fromJSON(text, simplifyVector = FALSE)
+    core <- payload$resources$core %||% payload$rate %||% list()
+    remaining <- suppressWarnings(as.integer(core$remaining %||% NA_integer_))
+    limit <- suppressWarnings(as.integer(core$limit %||% NA_integer_))
+    reset <- suppressWarnings(as.numeric(core$reset %||% NA_real_))
+
+    list(
+      status = "ok",
+      remaining = remaining,
+      limit = limit,
+      reset = reset,
+      updated_at = Sys.time(),
+      source = if (nzchar(token)) "account" else "anonymous",
+      error = NULL
+    )
+  }
   protocol_queue <- reactiveVal(list())
   protocol_active_job <- reactiveVal(NULL)
   protocol_worker <- reactiveVal(NULL)
@@ -2939,6 +3643,33 @@ server <- function(input, output, session) {
   protocol_log_path <- function(job_id) {
     file.path(protocol_job_dir, paste0(job_id, ".log"))
   }
+
+  github_oauth_callback_present <- function() {
+    query <- parseQueryString(session$clientData$url_search %||% "")
+    nzchar(trimws(query$code %||% ""))
+  }
+
+  oauth_callback_pending <- function() {
+    isTRUE(github_oauth_callback_present()) &&
+      !isTRUE(github_oauth_processed())
+  }
+
+  observe({
+    token <- account_github_token()
+    invalidateLater(60000, session)
+    github_rate_limit(tryCatch(
+      fetch_github_rate_limit(token),
+      error = function(e) list(
+        status = "error",
+        remaining = NA_integer_,
+        limit = NA_integer_,
+        reset = NA_real_,
+        updated_at = Sys.time(),
+        source = if (nzchar(trimws(token))) "account" else "anonymous",
+        error = conditionMessage(e)
+      )
+    ))
+  })
 
   protocol_write_progress <- function(path, value = 0, label = NULL) {
     dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
@@ -3009,6 +3740,7 @@ server <- function(input, output, session) {
     protocol_queue(queue[-1L])
     protocol_active_job(job)
     analysis_target(job$target)
+    active_protocol(job$protocol_type %||% "set")
     current_page("set_loading")
     update_protocol_progress(0, job$label)
     protocol_write_progress(job$progress_path, 0, job$label)
@@ -3059,7 +3791,7 @@ server <- function(input, output, session) {
   launch_protocol <- function(protocol_type, target = trimws(analysis_target() %||% "")) {
     target <- trimws(target %||% "")
     protocol_type <- tolower(protocol_type %||% "")
-    token <- trimws(account$github_token %||% "")
+    token <- account_github_token()
 
     if (!nzchar(target)) {
       notify_user("Не указана цель.", type = "error", duration = 6)
@@ -3069,6 +3801,11 @@ server <- function(input, output, session) {
 
     if (identical(protocol_type, "set")) {
       if (!nzchar(token)) {
+        if (isTRUE(account_github_token_expired())) {
+          notify_user("GitHoundToken истек. Войдите через GitHub еще раз, чтобы выпустить новый токен.", type = "error", duration = 8)
+          current_page("account")
+          return(invisible(FALSE))
+        }
         notify_user("В личном кабинете не указан GitHub токен.", type = "error", duration = 7)
         current_page("account")
         return(invisible(FALSE))
@@ -3077,9 +3814,10 @@ server <- function(input, output, session) {
 
     analysis_target(target)
     set_report(NULL)
+    active_protocol(protocol_type)
     launch_theme <- theme_mode()
     load_user_archive()
-    archive_same_target(target)
+    archive_same_target(target, protocol_type)
     current_page("set_loading")
 
     if (identical(protocol_type, "isis")) {
@@ -3120,7 +3858,7 @@ server <- function(input, output, session) {
         })
       }
     } else {
-      token <- trimws(account$github_token %||% "")
+      token <- account_github_token()
       set_progress$value <- 0
       set_progress$label <- "Запуск протокола Сет"
       try(session$flushReact(), silent = TRUE)
@@ -3321,32 +4059,30 @@ server <- function(input, output, session) {
     updated
   }
 
-  archive_same_target <- function(target) {
+  archive_same_target <- function(target, protocol_type = NULL) {
     records <- refresh_archive_status()
     normalized_target <- tolower(trimws(target %||% ""))
+    normalized_protocol <- tolower(trimws(protocol_type %||% ""))
     matching_idx <- which(vapply(records, function(item) {
+      item_protocol <- tolower(trimws(item$protocol_type %||% item$report$protocol_type %||% "set"))
       identical(item$status %||% "active", "active") &&
-        identical(tolower(trimws(item$target %||% "")), normalized_target)
+        identical(tolower(trimws(item$target %||% "")), normalized_target) &&
+        (!nzchar(normalized_protocol) || identical(item_protocol, normalized_protocol))
     }, logical(1)))
 
     if (length(matching_idx) == 0L) {
       return(invisible(records))
     }
 
-    created_times <- vapply(records[matching_idx], function(item) {
-      as.numeric(item$created_at %||% Sys.time())
-    }, numeric(1))
-    oldest_idx <- matching_idx[[which.min(created_times)]]
-
     updated <- records
-    updated[[oldest_idx]]$status <- "archived"
-    updated[[oldest_idx]]$archived_at <- Sys.time()
-    try(persist_archive_status(updated[[oldest_idx]]), silent = TRUE)
-
-    changed <- TRUE
-    if (isTRUE(changed)) {
-      report_archive(updated)
+    archived_at <- Sys.time()
+    for (idx in matching_idx) {
+      updated[[idx]]$status <- "archived"
+      updated[[idx]]$archived_at <- archived_at
+      try(persist_archive_status(updated[[idx]]), silent = TRUE)
     }
+
+    report_archive(updated)
     invisible(updated)
   }
 
@@ -3354,7 +4090,7 @@ server <- function(input, output, session) {
     report$theme <- report_theme_value(report, fallback = theme_mode())
     report$protocol_type <- tolower(report$protocol_type %||% "set")
     report$protocol_label <- report$protocol_label %||% archive_protocol_label(report$protocol_type)
-    records <- archive_same_target(target)
+    records <- archive_same_target(target, report$protocol_type)
     created_at <- Sys.time()
     expires_at <- created_at + 7 * 24 * 60 * 60
     item <- list(
@@ -3392,21 +4128,35 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$go_analysis, {
+    menu_open(FALSE)
     current_page("analysis")
   })
 
+  observeEvent(input$toggle_account_menu, {
+    menu_open(!isTRUE(menu_open()))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$menu_go_analysis, {
+    req(account$email)
+    menu_open(FALSE)
+    current_page("analysis")
+  }, ignoreInit = TRUE)
+
   observeEvent(input$open_account, {
     req(account$email)
+    menu_open(FALSE)
     current_page("account")
   })
 
   observeEvent(input$open_archive, {
+    menu_open(FALSE)
     load_user_archive()
     archive_page(1L)
     current_page("archive")
   })
 
   observeEvent(input$logout_request, {
+    menu_open(FALSE)
     showModal(modalDialog(
       easyClose = TRUE,
       title = NULL,
@@ -3441,6 +4191,8 @@ server <- function(input, output, session) {
     account$nickname <- NULL
     account$avatar_id <- "egypt_1"
     account$github_token <- ""
+    account$github_token_name <- ""
+    account$github_token_expires_at <- NA_character_
     remember_token(NULL)
     remember_attempted(TRUE)
     report_archive(list())
@@ -3490,6 +4242,94 @@ server <- function(input, output, session) {
       size = "l",
       footer = modalButton("Закрыть"),
       img(src = input$plot_modal$src, class = "plot-modal-image", alt = input$plot_modal$label %||% "График")
+    ))
+  })
+
+  observeEvent(input$show_full_text, {
+    req(is.list(input$show_full_text))
+    block_value <- function(name, fallback = "") {
+      trimws(as.character(input$show_full_text[[name]] %||% fallback))
+    }
+    summary_text <- block_value("summary", input$show_full_text$text %||% "")
+    details_text <- block_value("details")
+    aliases_text <- block_value("aliases")
+    references_text <- block_value("references")
+    if (!any(nzchar(c(summary_text, details_text, aliases_text, references_text)))) {
+      return()
+    }
+    title <- trimws(as.character(input$show_full_text$title %||% "Описание уязвимости"))
+    if (!nzchar(title)) {
+      title <- "Описание уязвимости"
+    }
+    render_modal_markdown <- function(value) {
+      value <- paste(as.character(value %||% ""), collapse = "\n")
+      value <- gsub("\r\n?", "\n", value)
+      value <- gsub("\n{3,}", "\n\n", value)
+      if (requireNamespace("commonmark", quietly = TRUE)) {
+        return(HTML(commonmark::markdown_html(
+          value,
+          hardbreaks = TRUE,
+          extensions = c("table", "strikethrough", "autolink")
+        )))
+      }
+      if (requireNamespace("markdown", quietly = TRUE)) {
+        return(HTML(markdown::markdownToHTML(
+          text = value,
+          fragment.only = TRUE,
+          options = c("tables", "fenced_code_blocks", "autolink")
+        )))
+      }
+      value
+    }
+    text_block <- function(label, value, markdown = FALSE) {
+      value <- trimws(as.character(value %||% ""))
+      if (!nzchar(value)) {
+        return(NULL)
+      }
+      div(
+        class = "full-text-modal-section",
+        div(class = "full-text-modal-section-title", label),
+        div(
+          class = paste("full-text-modal-section-content", if (isTRUE(markdown)) "full-text-modal-markdown" else "full-text-modal-plain"),
+          if (isTRUE(markdown)) render_modal_markdown(value) else value
+        )
+      )
+    }
+    list_block <- function(label, value, links = FALSE) {
+      value <- trimws(as.character(value %||% ""))
+      if (!nzchar(value)) {
+        return(NULL)
+      }
+      items <- trimws(unlist(strsplit(value, ",", fixed = TRUE)))
+      items <- items[nzchar(items)]
+      if (length(items) == 0L) {
+        return(text_block(label, value))
+      }
+      content <- if (isTRUE(links)) {
+        tags$ul(lapply(items, function(item) {
+          tags$li(tags$a(class = "full-text-modal-link", href = item, target = "_blank", rel = "noopener noreferrer", item))
+        }))
+      } else {
+        tags$ul(lapply(items, tags$li))
+      }
+      div(
+        class = "full-text-modal-section",
+        div(class = "full-text-modal-section-title", label),
+        div(class = "full-text-modal-section-content", content)
+      )
+    }
+    showModal(modalDialog(
+      title = title,
+      easyClose = TRUE,
+      size = "l",
+      footer = modalButton("Закрыть"),
+      div(
+        class = "full-text-modal-body",
+        text_block("Сводка", summary_text),
+        text_block("Подробное описание", details_text, markdown = TRUE),
+        list_block("Дополнительные индексы", aliases_text),
+        list_block("Ссылки", references_text, links = TRUE)
+      )
     ))
   })
 
@@ -3563,10 +4403,7 @@ server <- function(input, output, session) {
         avatar_id = account$avatar_id
       )
 
-      account$email <- created$email[[1]]
-      account$nickname <- created$nickname[[1]]
-      account$avatar_id <- created$avatar_id[[1]]
-      account$github_token <- created$github_token[[1]] %||% ""
+      apply_account_row(created)
       load_user_archive()
       current_page("analysis")
       notify_user("Аккаунт сохранён в ClickHouse.", type = "message")
@@ -3583,10 +4420,7 @@ server <- function(input, output, session) {
         password = input$login_password
       )
 
-      account$email <- logged_in$email[[1]]
-      account$nickname <- logged_in$nickname[[1]]
-      account$avatar_id <- logged_in$avatar_id[[1]]
-      account$github_token <- logged_in$github_token[[1]] %||% ""
+      apply_account_row(logged_in)
       load_user_archive()
       if (isTRUE(input$remember_me)) {
         token_info <- issue_githound_remember_token(conn, logged_in$email[[1]], days = 30L)
@@ -3611,7 +4445,79 @@ server <- function(input, output, session) {
     })
   })
 
+  observeEvent(input$github_login, {
+    tryCatch({
+      state <- githound_random_token(16L)
+      redirect_uri <- github_oauth_redirect_uri(session)
+      session$sendCustomMessage("startGithubOAuth", list(
+        url = github_oauth_authorize_url(state, redirect_uri),
+        state = state
+      ))
+    }, error = function(e) {
+      notify_user(conditionMessage(e), type = "error", duration = 8)
+    })
+  }, ignoreInit = TRUE)
+
+  observe({
+    if (isTRUE(github_oauth_processed())) {
+      return()
+    }
+    query <- parseQueryString(session$clientData$url_search %||% "")
+    code <- trimws(query$code %||% "")
+    state <- trimws(query$state %||% "")
+    if (!nzchar(code)) {
+      return()
+    }
+    if (!nzchar(account$email %||% "")) {
+      current_page("boot")
+    }
+
+    if (is.null(input$github_oauth_state_cookie)) {
+      return()
+    }
+    expected_state <- trimws(input$github_oauth_state_cookie %||% "")
+    if (!nzchar(expected_state)) {
+      return()
+    }
+    github_oauth_processed(TRUE)
+
+    tryCatch({
+      if (!identical(state, expected_state)) {
+        stop("GitHub OAuth state не совпал. Попробуйте войти еще раз.", call. = FALSE)
+      }
+
+      github_user <- complete_github_oauth(code, github_oauth_redirect_uri(session))
+      logged_in <- login_or_register_github_account(
+        conn = conn,
+        github_id = github_user$id,
+        github_login = github_user$login,
+        github_name = github_user$name,
+        github_email = github_user$email,
+        github_token = github_user$access_token,
+        github_token_name = github_user$token_name,
+        github_token_expires_at = github_user$token_expires_at,
+        avatar_id = account$avatar_id
+      )
+
+      apply_account_row(logged_in)
+      remember_attempted(TRUE)
+      load_user_archive()
+      current_page("analysis")
+      session$sendCustomMessage("finishGithubOAuth", list())
+      notify_user("Вход через GitHub выполнен.", type = "message")
+    }, error = function(e) {
+      session$sendCustomMessage("finishGithubOAuth", list())
+      if (identical(current_page(), "boot")) {
+        current_page("login")
+      }
+      notify_user(conditionMessage(e), type = "error", duration = 9)
+    })
+  })
+
   observeEvent(input$remember_token, {
+    if (isTRUE(oauth_callback_pending())) {
+      return()
+    }
     if (!isTRUE(remember_input_seen())) {
       remember_input_seen(TRUE)
     }
@@ -3636,10 +4542,7 @@ server <- function(input, output, session) {
 
     tryCatch({
       remembered <- login_githound_account_by_remember_token(conn, token)
-      account$email <- remembered$email[[1]]
-      account$nickname <- remembered$nickname[[1]]
-      account$avatar_id <- remembered$avatar_id[[1]]
-      account$github_token <- remembered$github_token[[1]] %||% ""
+      apply_account_row(remembered)
       remember_token(token)
       load_user_archive()
       current_page("analysis")
@@ -3654,6 +4557,9 @@ server <- function(input, output, session) {
 
   observe({
     if (!identical(current_page(), "boot")) {
+      return()
+    }
+    if (isTRUE(oauth_callback_pending())) {
       return()
     }
     invalidateLater(1800, session)
@@ -3700,19 +4606,114 @@ server <- function(input, output, session) {
   observeEvent(input$save_account, {
     req(account$email)
     tryCatch({
+      submitted_token <- trimws(input$account_token %||% "")
+      current_token <- trimws(account$github_token %||% "")
+      if (isTRUE(account_github_token_expired()) && identical(submitted_token, current_token)) {
+        notify_user("GitHoundToken истек. Войдите через GitHub еще раз или замените токен вручную.", type = "error", duration = 8)
+        return()
+      }
       updated <- update_githound_account_profile(
         conn = conn,
         email = account$email,
-        github_token = input$account_token,
+        github_token = submitted_token,
         avatar_id = input$avatar_id %||% account$avatar_id
       )
 
-      account$avatar_id <- updated$avatar_id[[1]]
-      account$github_token <- updated$github_token[[1]] %||% ""
+      apply_account_row(updated)
       notify_user("Профиль обновлен.", type = "message")
     }, error = function(e) {
       notify_user(conditionMessage(e), type = "error", duration = 7)
     })
+  })
+
+  output$account_token_status <- renderUI({
+    token <- trimws(account$github_token %||% "")
+    if (!nzchar(token)) {
+      return(p(
+        class = "account-copy",
+        "GitHub-токен не сохранен. Войдите через GitHub, чтобы GitHoundToken появился автоматически."
+      ))
+    }
+
+    token_name <- trimws(account$github_token_name %||% "")
+    if (!nzchar(token_name)) {
+      token_name <- "GitHub token"
+    }
+    expires_at <- parse_github_token_expires_at(account$github_token_expires_at)
+    if (isTRUE(account_github_token_expired())) {
+      return(p(
+        class = "account-copy",
+        paste0(token_name, " истек. Войдите через GitHub еще раз, чтобы выпустить новый токен.")
+      ))
+    }
+    if (!is.na(expires_at)) {
+      display_tz <- trimws(Sys.getenv("GITHOUND_RATE_LIMIT_TZ", unset = ""))
+      if (!nzchar(display_tz)) {
+        display_tz <- Sys.timezone()
+      }
+      if (!nzchar(display_tz) || is.na(display_tz) || !display_tz %in% OlsonNames()) {
+        display_tz <- "UTC"
+      }
+      return(p(
+        class = "account-copy",
+        paste0(token_name, " действует до ", format(expires_at, "%Y-%m-%d %H:%M %Z", tz = display_tz), ".")
+      ))
+    }
+
+    p(class = "account-copy", paste0(token_name, " сохранен без срока истечения в GitHound."))
+  })
+
+  output$github_rate_limit_ui <- renderUI({
+    rate <- github_rate_limit()
+    remaining <- suppressWarnings(as.integer(rate$remaining %||% NA_integer_))
+    limit <- suppressWarnings(as.integer(rate$limit %||% NA_integer_))
+    percent <- if (!is.na(remaining) && !is.na(limit) && limit > 0L) {
+      max(0, min(100, round(remaining / limit * 100)))
+    } else {
+      0L
+    }
+    value <- if (!is.na(remaining) && !is.na(limit)) {
+      paste0(remaining, " / ", limit)
+    } else {
+      "—"
+    }
+    reset <- suppressWarnings(as.numeric(rate$reset %||% NA_real_))
+    display_tz <- trimws(Sys.getenv("GITHOUND_RATE_LIMIT_TZ", unset = ""))
+    if (!nzchar(display_tz)) {
+      display_tz <- Sys.timezone()
+    }
+    if (!nzchar(display_tz) || is.na(display_tz) || !display_tz %in% OlsonNames()) {
+      display_tz <- "UTC"
+    }
+    reset_label <- if (!is.na(reset) && is.finite(reset) && reset > 0) {
+      paste("сброс", format(as.POSIXct(reset, origin = "1970-01-01", tz = display_tz), "%H:%M %Z"))
+    } else if (identical(rate$status, "error")) {
+      "лимит недоступен"
+    } else {
+      "загрузка /rate_limit"
+    }
+    source_label <- if (identical(rate$source, "account")) "токен аккаунта" else "анонимно"
+    title <- if (identical(rate$status, "error") && nzchar(rate$error %||% "")) {
+      rate$error
+    } else {
+      paste("GitHub /rate_limit:", source_label)
+    }
+
+    div(
+      class = "github-rate-card",
+      title = title,
+      div(
+        class = "github-rate-top",
+        span(class = "github-rate-title", "GitHub API"),
+        span(class = "github-rate-value", value)
+      ),
+      div(
+        class = "github-rate-track",
+        style = paste0("--github-rate-percent: ", percent, "%;"),
+        div(class = "github-rate-fill")
+      ),
+      div(class = "github-rate-meta", paste(reset_label, "·", source_label))
+    )
   })
 
   output$profile_photo <- renderUI({
@@ -3721,9 +4722,22 @@ server <- function(input, output, session) {
 
   output$set_progress_ui <- renderUI({
     value <- max(0, min(100, as.integer(set_progress$value %||% 0)))
+    label <- as.character(set_progress$label %||% "Запуск протокола")
+    label_parts <- strsplit(label, "\n", fixed = TRUE)[[1]]
+    stage_label <- label_parts[[1]] %||% ""
+    working_label <- if (length(label_parts) > 1L) {
+      paste(label_parts[-1], collapse = "\n")
+    } else {
+      ""
+    }
     div(
       class = "set-progress-wrap",
-      div(id = "set_progress_label", class = "set-progress-label", set_progress$label %||% "Запуск протокола"),
+      div(
+        id = "set_progress_label",
+        class = "set-progress-label",
+        span(class = "set-progress-stage", stage_label),
+        if (nzchar(working_label)) span(class = "set-progress-working", working_label)
+      ),
       div(
         id = "set_progress_track",
         class = "set-progress-track",
@@ -3762,17 +4776,24 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
-    div(
-      class = "account-menu",
-      div(class = "account-menu-trigger", "Меню"),
-      div(
-      class = "account-menu-panel",
+    menu_items <- tagList(
+      if (!identical(current_page(), "analysis")) {
+        actionButton("menu_go_analysis", "Главная", class = "menu-button secondary-button")
+      },
       actionButton("open_account", "Личный кабинет", class = "menu-button secondary-button"),
       actionButton("open_archive", "Архив", class = "menu-button secondary-button"),
       actionButton("logout_request", "Выход", class = "menu-button secondary-button")
     )
-  )
-})
+
+    div(
+      class = paste("account-menu", if (isTRUE(menu_open())) "account-menu-open" else ""),
+      actionButton("toggle_account_menu", "Меню", class = "account-menu-trigger"),
+      div(
+        class = "account-menu-panel",
+        menu_items
+      )
+    )
+  })
 
   output$page <- renderUI({
     if (identical(current_page(), "boot")) {
@@ -3792,7 +4813,7 @@ server <- function(input, output, session) {
     } else if (identical(current_page(), "protocol")) {
       protocol_screen(analysis_target() %||% "")
     } else if (identical(current_page(), "set_loading")) {
-      set_loading_screen(analysis_target() %||% "")
+      set_loading_screen(analysis_target() %||% "", active_protocol())
     } else if (identical(current_page(), "set_report")) {
       report <- set_report()
       if (is.list(report)) {

@@ -5,6 +5,7 @@ get_user_commits <- function(profile,
                              repos = NULL,
                              max_repos = NULL,
                              include_stats = FALSE,
+                             commit_workers = NULL,
                              conn = NULL) {
   if (is.null(conn)) {
     stop("Необходимо передать объект подключения ClickHouse в параметре 'conn'.")
@@ -23,6 +24,29 @@ get_user_commits <- function(profile,
   library(httr)
   
   `%||%` <- function(x, y) if (is.null(x)) y else x
+
+  resolve_commit_workers <- function(repo_count, override = NULL) {
+    repo_count <- suppressWarnings(as.integer(repo_count))
+    if (is.na(repo_count) || repo_count < 1L) {
+      return(1L)
+    }
+
+    raw_value <- if (!is.null(override)) {
+      as.character(override[[1]])
+    } else {
+      env_names <- c("GITHOUND_COMMIT_WORKERS", "GITHOUND_COMMIT_COLLECTION_WORKERS")
+      values <- Sys.getenv(env_names, unset = "")
+      values <- values[nzchar(values)]
+      if (length(values) > 0L) values[[1L]] else ""
+    }
+
+    workers <- suppressWarnings(as.integer(raw_value))
+    if (is.na(workers) || workers < 1L) {
+      workers <- 1L
+    }
+
+    max(1L, min(workers, repo_count))
+  }
   
   read_cached_rows <- function(table_name, where_sql) {
     table_exists <- exists("table_exists_custom", mode = "function") &&
@@ -423,6 +447,72 @@ get_user_commits <- function(profile,
   }
   
   all_commits <- list()
+
+  commit_worker_count <- resolve_commit_workers(length(repo_list), commit_workers)
+  if (commit_worker_count > 1L && requireNamespace("parallel", quietly = TRUE)) {
+    message(
+      "Collecting commits in parallel: ",
+      commit_worker_count,
+      " workers for ",
+      length(repo_list),
+      " repositories."
+    )
+    cl <- parallel::makeCluster(commit_worker_count)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterEvalQ(cl, {
+      library(gh)
+      library(dplyr)
+      library(purrr)
+      library(httr)
+      NULL
+    })
+    parallel::clusterExport(
+      cl,
+      varlist = c("collect_commits_from_repo", "username", "token", "include_stats", "%||%"),
+      envir = environment()
+    )
+    repo_results <- parallel::parLapply(
+      cl = cl,
+      X = as.list(repo_list),
+      fun = function(repo_full) {
+        tryCatch({
+          repo_commits <- collect_commits_from_repo(
+            repo_full = repo_full,
+            username = username,
+            token = token,
+            include_stats = include_stats
+          )
+          list(repo = repo_full, commits = repo_commits, error = NULL)
+        }, error = function(e) {
+          list(repo = repo_full, commits = data.frame(), error = conditionMessage(e))
+        })
+      }
+    )
+
+    for (result in repo_results) {
+      repo_full <- result$repo %||% NA_character_
+      if (!is.null(result$error) && nzchar(result$error)) {
+        if (grepl("409", result$error)) {
+          message("  Empty repository, skipping: ", repo_full)
+        } else {
+          warning("Error while processing repository ", repo_full, ": ", result$error)
+        }
+        next
+      }
+
+      repo_commits <- result$commits
+      if (is.data.frame(repo_commits) && nrow(repo_commits) > 0L) {
+        all_commits[[repo_full]] <- repo_commits
+        message("  Commits found in ", repo_full, ": ", nrow(repo_commits))
+      } else {
+        message("  No commits found in ", repo_full, ".")
+      }
+    }
+
+    repo_list <- character()
+  } else if (commit_worker_count > 1L) {
+    warning("Package 'parallel' is not available. Falling back to sequential commit collection.")
+  }
   
   for (repo_full in repo_list) {
     message("Обрабатываю репозиторий: ", repo_full)
