@@ -1,0 +1,318 @@
+---
+title: "Анализ Git репозиториев"
+subtitle: "Фаза аналитики & ML"
+author: "GitHound"
+lang: ru
+format:
+  revealjs:
+    theme: default
+    css: custom.css
+    slide-number: true
+    transition: fade
+    center: false
+    width: 1280
+    height: 720
+    margin: 0.06
+    controls: true
+    progress: true
+    background-color: "#120207"
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## GitHound {background-color="#120207"}
+
+<div class="hero">
+  <div class="hero-mark">𓃥</div>
+  <h1>Анализ Git репозиториев</h1>
+  <h2>Фаза аналитики &amp; ML</h2>
+  <div class="subtitle-line">Из сырых событий GitHub → в поведенческий профиль разработчика</div>
+  <div class="authors">Заргаров А.Д. · Миронов П.Э. · Соколова М.М.</div>
+</div>
+
+---
+
+## Фаза аналитики & ML
+
+:::: columns
+
+::: {.column .feature-card width="40%"}
+
+### 01 · СЕТ
+
+- Стек разработчика
+- LoC на коммит
+- Коммиты
+- Дни активности
+- Социализация
+- Уязвимости компонент
+
+:::
+
+::: {.column width="10%"}
+
+:::
+
+::: {.column .feature-card width="40%"}
+
+### 02 · ИСИДА
+
+
+- Анализ результатов от СЕТ
+- ML-интерпретация
+- Психологический портрет
+- Итоговый вывод
+
+:::
+
+::::
+
+---
+
+## Общий пайплайн
+
+```{mermaid}
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontSize": "28px",
+    "fontFamily": "Inter, Segoe UI, sans-serif"
+  },
+  "flowchart": {
+    "nodeSpacing": 45,
+    "rankSpacing": 60,
+    "padding": 18,
+    "htmlLabels": true,
+    "useMaxWidth": true
+  }
+}}%%
+flowchart LR
+
+    subgraph P1["Этап 1 · Сбор и аналитика"]
+        direction LR
+        A["GitHub API<br/>Сбор данных"] --> B["ETL<br/>ClickHouse + MongoDB"]
+        B --> C["Feature<br/>Engineering"]
+        C --> D["Классификация<br/>изменений"]
+        D --> F["СЕТ<br/>Формирование профиля"]
+    end
+
+    subgraph P2["Этап 2 · ML-интерпретация"]
+        direction LR
+        E["Поведенческие<br/>метрики"] --> G["ИСИДА<br/>LLM-анализ"]
+        G --> H["Психологический<br/>портрет"]
+    end
+
+    F --> E
+
+    style P1 fill:none,stroke:#ffffff,stroke-width:2px,color:#ffffff,font-size:20px
+    style P2 fill:none,stroke:#ffffff,stroke-width:2px,color:#ffffff,font-size:20px
+
+    classDef source fill:#2a0610,stroke:#d1a945,color:#fff,stroke-width:2px;
+    classDef proc fill:#4c0b17,stroke:#d1a945,color:#fff,stroke-width:2px;
+    classDef out fill:#d1a945,stroke:#fff,color:#120207,stroke-width:2px;
+
+    class A,B source;
+    class C,D,E proc;
+    class F,G,H out;
+```
+
+<div class="note">
+<p>Ключевой принцип: Мы отделяем факты от интерпретаций.</p>
+<p>СЕТ не обращается к ИИ, а ИСИДА работает только поверх подготовленного СЕТом отчета</p>
+</div>
+
+---
+
+## Признаки для ML-слоя
+
+<div class="matrix">
+
+| Группа признаков | Примеры | Что дает |
+|---|---|---|
+| **Языки и стек** | топ языков, доля backend/frontend | предпочтения в разработке
+| **Размер изменений** | LoC/коммит, файлы/коммит, соотношение добавлений/удалений | стиль работы: мелкие итерации или крупные патчи |
+| **Текст коммитов** | длина, императивность, наличие issue-id, TODO/FIXME | дисциплина и контекстность изменений |
+| **Время** | часы активности, дни недели, интервалы между коммитами | рабочие паттерны и регулярность |
+| **Качество** | тесты, документация, конфиги, зависимости | фокус на поддерживаемости и рисках |
+
+</div>
+
+---
+
+## СЕТ: фактологический профиль 
+<div class="section-kicker">СЕТ = сбор, агрегация и отчет без LLM</div>
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+### Что попадает в отчет
+
+- публичный профиль GitHub  
+- список репозиториев и языков  
+- коммитная активность  
+- статистика LoC на коммит  
+- длина и структура коммитов 
+- дни активности  
+- уязвимости зависимостей  
+- графики: динамика, топ репозиториев, активность по месяцам  
+
+:::
+
+::: {.column width="3%"}
+
+:::
+
+::: {.column .report-card .set-card width="40%"}
+
+### Отчет СЕТа
+
+**Профиль разработчика**
+
+**Предпочитаемые языки** → R / C++ / CSS / и пр.
+
+**LoC на commit** → распределение + выбросы
+
+**Commit стиль** → длина сообщения + выбросы
+
+**Активность** → дни
+
+:::
+
+::::
+
+---
+
+## СЕТ: пример сводки по QazRT
+
+<div class="metric-row">
+  <div class="metric"><span class="metric-number">95</span><span class="metric-caption">коммитов</span></div>
+  <div class="metric"><span class="metric-number">9</span><span class="metric-caption">репозиториев</span></div>
+  <div class="metric"><span class="metric-number">303</span><span class="metric-caption">точки активности</span></div>
+  <div class="metric"><span class="metric-number">45</span><span class="metric-caption">активных дней</span></div>
+</div>
+
+<div class="callout"><b>Пример из отчета СЕТ</b>: активность сосредоточена в собственных репозиториях, среди языков встречаются R, C++, CSS и PHP. Отдельный блок показывает уязвимости зависимостей и их жизненный цикл.</div>
+
+---
+
+## ИСИДА: интерпретация поверх отчета СЕТ
+
+<div class="section-kicker">ИСИДА = LLM-слой с полным контекстом от СЕТа, который формирует портрет и выводы</div>
+
+:::: {.columns}
+
+::: {.column width="50%"}
+
+### Вход
+
+- отчеты от СЕТ  
+- таблицы с метриками  
+- графики активности  
+- статистика коммитов  
+- результаты проверки зависимостей  
+
+:::
+
+::: {.column width="50%"}
+
+### Выход
+
+- поведенческий профиль разработчика  
+- сильные стороны и рабочие привычки  
+- ссылки на факты из отчета СЕТа  
+
+:::
+
+::::
+
+---
+
+## Слайд для скриншота промпта ИСИДы
+
+
+---
+
+## Качество выводов и ограничения
+
+:::: {.columns}
+
+::: {.column .quality-item width="45%"}
+
+### Проверяемость
+
+Каждый вывод должен ссылаться на конкретные признаки: LoC, время, файлы, языки, репозитории.
+
+:::
+
+::: {.column  width="5%"}
+
+:::
+
+::: {.column .quality-item width="40%" }
+
+### Уверенность
+
+Для ИСИДы вводим шкалу уверенности: высокая / средняя / низкая.
+
+
+:::
+
+::::
+
+:::: {.columns}
+
+::: {.column .quality-item width="45%"}
+
+### Приватность
+
+Не собираем закрытые данные без разрешения. Не выводим чувствительные персональные оценки.
+
+:::
+
+::: {.column  width="5%"}
+
+:::
+
+::: {.column .quality-item width="40%" style="height: 240px; max-width:40%"}
+
+### Объяснимость
+
+Отчет должен объяснять, почему сделан вывод, а не просто выдавать ярлык.
+
+:::
+
+::::
+
+---
+
+## Результат фазы аналитики & ML
+
+:::: {.columns}
+
+
+::: {.column .final-item width="45%" style="height: 202px; max-width:45%"}
+
+**Отчет СЕТа**  
+
+Фактологический профиль разработчика по GitHub-аккаунту.
+
+:::
+
+::: {.column  width="5%"}
+
+:::
+
+::: {.column .final-item width="40%"}
+
+**Отчет ИСИДы**  
+
+Поведенческая интерпретация на основе СЕТа с уровнем уверенности.
+
+:::
+
+::::
+
+# Спасибо за внимание!
