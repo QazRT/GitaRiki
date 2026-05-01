@@ -154,6 +154,106 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   invisible(NULL)
 }
 
+.osv_progress_paths <- function() {
+  progress_path <- Sys.getenv("GITHOUND_PROTOCOL_PROGRESS_PATH", "")
+  if (!.osv_non_empty(progress_path)) {
+    return(NULL)
+  }
+  list(
+    progress_path = progress_path,
+    state_path = paste0(progress_path, ".vuln_state.rds"),
+    lock_dir = paste0(progress_path, ".vuln_state.lock")
+  )
+}
+
+.osv_progress_with_lock <- function(fun) {
+  paths <- .osv_progress_paths()
+  if (is.null(paths)) {
+    return(invisible(NULL))
+  }
+  deadline <- Sys.time() + 5
+  while (!dir.create(paths$lock_dir, showWarnings = FALSE)) {
+    if (Sys.time() > deadline) {
+      return(invisible(NULL))
+    }
+    Sys.sleep(0.03)
+  }
+  on.exit(unlink(paths$lock_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  state <- if (file.exists(paths$state_path)) {
+    tryCatch(readRDS(paths$state_path), error = function(e) list(done = 0L, total = 0L))
+  } else {
+    list(done = 0L, total = 0L)
+  }
+  state$done <- suppressWarnings(as.integer(.osv_null(state$done, 0L)))
+  state$total <- suppressWarnings(as.integer(.osv_null(state$total, 0L)))
+  state$value <- suppressWarnings(as.integer(.osv_null(state$value, 82L)))
+  if (is.na(state$done)) state$done <- 0L
+  if (is.na(state$total)) state$total <- 0L
+  if (is.na(state$value)) state$value <- 82L
+
+  state <- fun(state)
+  state$done <- max(0L, suppressWarnings(as.integer(.osv_null(state$done, 0L))))
+  state$total <- max(0L, suppressWarnings(as.integer(.osv_null(state$total, 0L))))
+  if (state$total > 0L) {
+    state$done <- min(state$done, state$total)
+  }
+
+  tmp_state <- paste0(paths$state_path, ".", Sys.getpid(), ".tmp")
+  saveRDS(state, tmp_state)
+  if (file.exists(paths$state_path)) {
+    unlink(paths$state_path, force = TRUE)
+  }
+  file.rename(tmp_state, paths$state_path)
+
+  pct <- if (state$total > 0L) state$done / state$total else 0
+  value <- max(state$value, 82L + as.integer(round(6 * max(0, min(1, pct)))))
+  state$value <- value
+  label <- if (state$total > 0L) {
+    paste0("Поиск уязвимостей зависимостей: ", state$done, "/", state$total, " коммитов")
+  } else {
+    "Поиск уязвимостей зависимостей"
+  }
+  tmp_progress <- paste0(paths$progress_path, ".", Sys.getpid(), ".tmp")
+  saveRDS(list(value = value, label = label, updated_at = Sys.time()), tmp_progress)
+  if (file.exists(paths$progress_path)) {
+    unlink(paths$progress_path, force = TRUE)
+  }
+  file.rename(tmp_progress, paths$progress_path)
+  invisible(state)
+}
+
+.osv_progress_reset <- function() {
+  .osv_progress_with_lock(function(state) {
+    state$done <- 0L
+    state$total <- 0L
+    state$value <- 82L
+    state
+  })
+}
+
+.osv_progress_add_total <- function(n) {
+  n <- suppressWarnings(as.integer(n))
+  if (is.na(n) || n <= 0L) {
+    return(invisible(NULL))
+  }
+  .osv_progress_with_lock(function(state) {
+    state$total <- state$total + n
+    state
+  })
+}
+
+.osv_progress_add_done <- function(n = 1L) {
+  n <- suppressWarnings(as.integer(n))
+  if (is.na(n) || n <= 0L) {
+    return(invisible(NULL))
+  }
+  .osv_progress_with_lock(function(state) {
+    state$done <- state$done + n
+    state
+  })
+}
+
 .gh_repo_commits <- function(repo_full, token = NULL, max_commits = NULL, since = NULL) {
   .gh_require()
   args <- list(
@@ -325,6 +425,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 .rebuild_lifecycle_from_summary_and_vulnerabilities <- function(summary_df, vulnerabilities_df) {
   template_cols <- c(
     "repository", "vulnerability_key", "osv_id",
+    "vulnerability_published", "vulnerability_modified",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
     "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
@@ -629,6 +730,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 
   # Schema evolution for previously created cache tables.
   .ch_add_column_if_missing(conn, tables$summary, "commit_author", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$lifecycle, "vulnerability_published", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$lifecycle, "vulnerability_modified", "Nullable(String)")
   .ch_add_column_if_missing(conn, tables$lifecycle, "introduced_author", "Nullable(String)")
   .ch_add_column_if_missing(conn, tables$lifecycle, "fixed_author", "Nullable(String)")
 
@@ -835,6 +938,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 .build_vulnerability_lifecycle <- function(repo_full, scan_snapshots) {
   template_cols <- c(
     "repository", "vulnerability_key", "osv_id",
+    "vulnerability_published", "vulnerability_modified",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
     "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
@@ -874,6 +978,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       repository = repo_full,
       vulnerability_key = state$key,
       osv_id = row_get(row_df, "osv_id"),
+      vulnerability_published = row_get(row_df, "published"),
+      vulnerability_modified = row_get(row_df, "modified"),
       query_purl = row_get(row_df, "query_purl"),
       matched_purl = row_get(row_df, "matched_purl"),
       matched_package = row_get(row_df, "matched_package"),
@@ -1104,6 +1210,123 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   )
 }
 
+.scan_dependency_commit_job <- function(job,
+                                        token,
+                                        temp_root,
+                                        keep_snapshots,
+                                        include_uncertain,
+                                        syft_resolved,
+                                        osv_db_obj,
+                                        syft_timeout_sec = 0L,
+                                        syft_excludes = NULL) {
+  repo_full <- job$repo_full
+  sha <- job$sha
+  dep_files <- .osv_null(job$dep_files, character(0))
+  errors <- list()
+  append_error <- function(stage, err) {
+    errors[[length(errors) + 1L]] <<- data.frame(
+      repository = repo_full,
+      sha = sha,
+      stage = stage,
+      error = err,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  snapshot <- tryCatch(
+    .download_repo_snapshot(repo_full, sha = sha, token = token, temp_root = temp_root),
+    error = function(e) {
+      append_error("download_snapshot", conditionMessage(e))
+      NULL
+    }
+  )
+
+  scan <- NULL
+  if (!is.null(snapshot)) {
+    scan <- tryCatch(
+      scan_path_with_syft_and_osv(
+        target_path = snapshot$repo_dir,
+        osv_db = osv_db_obj,
+        syft_path = syft_resolved,
+        include_uncertain = include_uncertain,
+        keep_sbom = FALSE,
+        syft_timeout_sec = syft_timeout_sec,
+        syft_excludes = syft_excludes
+      ),
+      error = function(e) {
+        append_error("syft_or_osv_scan", conditionMessage(e))
+        NULL
+      }
+    )
+
+    if (!isTRUE(keep_snapshots)) {
+      unlink(snapshot$work_dir, recursive = TRUE, force = TRUE)
+    }
+  }
+
+  vuln_count <- 0L
+  scan_commit_rows <- data.frame()
+  if (!is.null(scan) && is.data.frame(scan$vulnerabilities) && nrow(scan$vulnerabilities) > 0L) {
+    vulns <- scan$vulnerabilities
+    vulns$repository <- repo_full
+    vulns$sha <- sha
+    vulns$commit_date <- job$date
+    vulns$commit_message <- job$message
+    vulns$dependency_files <- paste(dep_files, collapse = ";")
+    scan_commit_rows <- vulns
+    vuln_count <- nrow(vulns)
+  }
+
+  key_rows <- list()
+  keys <- character(0)
+  if (!is.null(scan) && is.data.frame(scan_commit_rows) && nrow(scan_commit_rows) > 0L) {
+    for (ri in seq_len(nrow(scan_commit_rows))) {
+      row_i <- scan_commit_rows[ri, , drop = FALSE]
+      key_i <- .vuln_lifecycle_key(row_i)
+      if (!key_i %in% names(key_rows)) {
+        key_rows[[key_i]] <- row_i
+      }
+      keys <- c(keys, key_i)
+    }
+  }
+
+  summary <- data.frame(
+    repository = repo_full,
+    sha = sha,
+    date = job$date,
+    message = job$message,
+    commit_author = job$author,
+    scanned = !is.null(scan),
+    dependency_files = paste(dep_files, collapse = ";"),
+    vulnerability_count = if (is.null(scan)) NA_integer_ else as.integer(vuln_count),
+    status = if (is.null(scan)) "scan_failed" else .osv_null(job$status_success, "scanned"),
+    stringsAsFactors = FALSE
+  )
+
+  snapshot_row <- if (!is.null(scan)) {
+    list(
+      order = job$order,
+      sha = sha,
+      date = job$date,
+      message = job$message,
+      author = job$author,
+      dependency_files = paste(dep_files, collapse = ";"),
+      keys = unique(keys),
+      key_rows = key_rows
+    )
+  } else {
+    NULL
+  }
+
+  .osv_progress_add_done(1L)
+  list(
+    summary = summary,
+    vulnerabilities = scan_commit_rows,
+    scan_snapshot = snapshot_row,
+    errors = .rbind_data_frames(errors, template_cols = c("repository", "sha", "stage", "error"))
+  )
+}
+
 .analyze_repository_commits <- function(
     repo_full,
     token,
@@ -1119,6 +1342,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     osv_db_obj,
     syft_timeout_sec = 0L,
     syft_excludes = NULL,
+    syft_scan_parallel = FALSE,
+    syft_scan_workers = 1L,
     commit_info_parallel = FALSE,
     commit_info_workers = 1L,
     prefetched_commits = NULL,
@@ -1195,6 +1420,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   suitable_n <- 0L
   fallback_commit <- NULL
   fallback_summary_index <- NA_integer_
+  scan_jobs <- list()
   emit_progress <- function(force = FALSE) {
     if (!isTRUE(debug)) return(invisible(NULL))
     if (!isTRUE(force) && (processed_n %% debug_repo_every != 0L) && processed_n != total_commits) {
@@ -1294,114 +1520,152 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     }
 
     suitable_n <- suitable_n + 1L
-    snapshot <- tryCatch(
-      .download_repo_snapshot(repo_full, sha = sha, token = token, temp_root = temp_root),
-      error = function(e) {
-        append_error(sha, "download_snapshot", conditionMessage(e))
-        NULL
-      }
-    )
-
-    if (is.null(snapshot)) {
-      failed_n <- failed_n + 1L
-      summary_rows[[length(summary_rows) + 1L]] <- data.frame(
-        repository = repo_full,
-        sha = sha,
-        date = commit_date,
-        message = commit_message,
-        commit_author = commit_author,
-        scanned = FALSE,
-        dependency_files = paste(dep_files, collapse = ";"),
-        vulnerability_count = NA_integer_,
-          status = "failed_snapshot_download",
-          stringsAsFactors = FALSE
-        )
-      processed_n <- processed_n + 1L
-      emit_progress()
-      next
-    }
-
-    scan <- tryCatch(
-      scan_path_with_syft_and_osv(
-        target_path = snapshot$repo_dir,
-        osv_db = osv_db_obj,
-        syft_path = syft_resolved,
-        include_uncertain = include_uncertain,
-        keep_sbom = FALSE,
-        syft_timeout_sec = syft_timeout_sec,
-        syft_excludes = syft_excludes
-      ),
-      error = function(e) {
-        append_error(sha, "syft_or_osv_scan", conditionMessage(e))
-        NULL
-      }
-    )
-
-    if (!isTRUE(keep_snapshots)) {
-      unlink(snapshot$work_dir, recursive = TRUE, force = TRUE)
-    }
-
-    vuln_count <- 0L
-    scan_commit_rows <- data.frame()
-    if (!is.null(scan) && is.data.frame(scan$vulnerabilities) && nrow(scan$vulnerabilities) > 0L) {
-      vulns <- scan$vulnerabilities
-      vulns$repository <- repo_full
-      vulns$sha <- sha
-      vulns$commit_date <- commit_date
-      vulns$commit_message <- commit_message
-      vulns$dependency_files <- paste(dep_files, collapse = ";")
-      scan_commit_rows <- vulns
-      vulnerability_rows[[length(vulnerability_rows) + 1L]] <- vulns
-      vuln_count <- nrow(vulns)
-    }
-    if (!is.null(scan)) {
-      key_rows <- list()
-      keys <- character(0)
-      if (is.data.frame(scan_commit_rows) && nrow(scan_commit_rows) > 0L) {
-        for (ri in seq_len(nrow(scan_commit_rows))) {
-          row_i <- scan_commit_rows[ri, , drop = FALSE]
-          key_i <- .vuln_lifecycle_key(row_i)
-          if (!key_i %in% names(key_rows)) {
-            key_rows[[key_i]] <- row_i
-          }
-          keys <- c(keys, key_i)
-        }
-      }
-      scan_snapshots[[length(scan_snapshots) + 1L]] <- list(
-        order = commit_idx,
-        sha = sha,
-        date = commit_date,
-        message = commit_message,
-        author = commit_author,
-        dependency_files = paste(dep_files, collapse = ";"),
-        keys = unique(keys),
-        key_rows = key_rows
-      )
-    }
-
-    summary_rows[[length(summary_rows) + 1L]] <- data.frame(
-      repository = repo_full,
+    scan_jobs[[length(scan_jobs) + 1L]] <- list(
+      repo_full = repo_full,
+      order = commit_idx,
       sha = sha,
       date = commit_date,
       message = commit_message,
-      commit_author = commit_author,
-      scanned = !is.null(scan),
-      dependency_files = paste(dep_files, collapse = ";"),
-      vulnerability_count = as.integer(vuln_count),
-      status = if (is.null(scan)) "scan_failed" else "scanned",
-      stringsAsFactors = FALSE
+      author = commit_author,
+      dep_files = dep_files,
+      status_success = "scanned"
     )
-    if (!is.null(scan)) {
-      scanned_n <- scanned_n + 1L
-    } else {
-      failed_n <- failed_n + 1L
-    }
     processed_n <- processed_n + 1L
     emit_progress()
   }
 
+  if (length(scan_jobs) > 0L) {
+    .osv_progress_add_total(length(scan_jobs))
+    syft_workers <- max(1L, min(as.integer(syft_scan_workers), length(scan_jobs)))
+    use_syft_parallel <- isTRUE(syft_scan_parallel) &&
+      syft_workers > 1L &&
+      requireNamespace("parallel", quietly = TRUE)
+
+    scan_results <- if (use_syft_parallel) {
+      cl <- parallel::makeCluster(syft_workers)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
+      export_fns <- c(
+        ".scan_dependency_commit_job",
+        ".download_repo_snapshot",
+        "scan_path_with_syft_and_osv",
+        "scan_sbom_components_with_osv",
+        "parse_cyclonedx_sbom",
+        "generate_syft_cyclonedx_sbom",
+        "search_osv_vulnerabilities",
+        "load_osv_mongo_database",
+        "search_osv_vulnerabilities_mongo",
+        ".osv_get_mongo_connection",
+        ".osv_collapse_values",
+        ".osv_reference_urls",
+        ".osv_match_to_df",
+        ".osv_resolve_db",
+        ".osv_is_package_match",
+        ".osv_eval_events",
+        ".osv_is_version_affected",
+        ".osv_collect_entry_match",
+        ".osv_parse_purl",
+        ".osv_normalize_purl",
+        ".osv_map_purl_type_to_ecosystem",
+        ".osv_candidate_package_names_from_purl",
+        ".osv_normalize_package_key",
+        ".osv_compare_versions_loose",
+        ".syft_collect_components",
+        ".vuln_lifecycle_key",
+        ".rbind_data_frames",
+        ".resolve_executable_path",
+        ".osv_to_scalar",
+        ".osv_null",
+        ".osv_non_empty",
+        ".osv_progress_paths",
+        ".osv_progress_with_lock",
+        ".osv_progress_add_done"
+      )
+      fn_env <- new.env(parent = emptyenv())
+      for (nm in export_fns) {
+        assign(nm, get(nm, mode = "function", inherits = TRUE), envir = fn_env)
+      }
+      worker_mongo_cfg <- list(
+        mongo_url = osv_db_obj$mongo_url,
+        db_name = osv_db_obj$db_name,
+        collection = .osv_null(osv_db_obj$collection, "vulns")
+      )
+      parallel::clusterExport(cl, varlist = export_fns, envir = fn_env)
+      parallel::clusterExport(cl, varlist = c("worker_mongo_cfg"), envir = environment())
+      parallel::clusterEvalQ(cl, {
+        .gitariki_worker_osv_db <- load_osv_mongo_database(
+          mongo_url = worker_mongo_cfg$mongo_url,
+          db_name = worker_mongo_cfg$db_name,
+          collection = worker_mongo_cfg$collection,
+          validate = FALSE
+        )
+        NULL
+      })
+      parallel::parLapply(
+        cl,
+        scan_jobs,
+        function(job, token, temp_root, keep_snapshots, include_uncertain, syft_resolved,
+                 syft_timeout_sec, syft_excludes) {
+          .scan_dependency_commit_job(
+            job = job,
+            token = token,
+            temp_root = temp_root,
+            keep_snapshots = keep_snapshots,
+            include_uncertain = include_uncertain,
+            syft_resolved = syft_resolved,
+            osv_db_obj = .gitariki_worker_osv_db,
+            syft_timeout_sec = syft_timeout_sec,
+            syft_excludes = syft_excludes
+          )
+        },
+        token = token,
+        temp_root = temp_root,
+        keep_snapshots = keep_snapshots,
+        include_uncertain = include_uncertain,
+        syft_resolved = syft_resolved,
+        syft_timeout_sec = syft_timeout_sec,
+        syft_excludes = syft_excludes
+      )
+    } else {
+      lapply(
+        scan_jobs,
+        .scan_dependency_commit_job,
+        token = token,
+        temp_root = temp_root,
+        keep_snapshots = keep_snapshots,
+        include_uncertain = include_uncertain,
+        syft_resolved = syft_resolved,
+        osv_db_obj = osv_db_obj,
+        syft_timeout_sec = syft_timeout_sec,
+        syft_excludes = syft_excludes
+      )
+    }
+
+    for (res in scan_results) {
+      if (is.data.frame(res$summary) && nrow(res$summary) > 0L) {
+        summary_rows[[length(summary_rows) + 1L]] <- res$summary
+        if (isTRUE(res$summary$scanned[[1]])) scanned_n <- scanned_n + 1L else failed_n <- failed_n + 1L
+      }
+      if (is.data.frame(res$vulnerabilities) && nrow(res$vulnerabilities) > 0L) {
+        vulnerability_rows[[length(vulnerability_rows) + 1L]] <- res$vulnerabilities
+      }
+      if (!is.null(res$scan_snapshot)) {
+        scan_snapshots[[length(scan_snapshots) + 1L]] <- res$scan_snapshot
+      }
+      if (is.data.frame(res$errors) && nrow(res$errors) > 0L) {
+        for (ei in seq_len(nrow(res$errors))) {
+          append_error(
+            sha = as.character(res$errors$sha[[ei]]),
+            stage = as.character(res$errors$stage[[ei]]),
+            err = as.character(res$errors$error[[ei]])
+          )
+        }
+      }
+    }
+  }
+
   if (identical(suitable_n, 0L) && !isTRUE(force_scan) && !is.null(fallback_commit)) {
     .debug_log(debug, "repo", repo_full, ": no dependency-changing commits found; scanning latest commit fallback=", fallback_commit$sha)
+    .osv_progress_add_total(1L)
     snapshot <- tryCatch(
       .download_repo_snapshot(repo_full, sha = fallback_commit$sha, token = token, temp_root = temp_root),
       error = function(e) {
@@ -1497,6 +1761,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     } else {
       failed_n <- failed_n + 1L
     }
+    .osv_progress_add_done(1L)
   }
   emit_progress(force = TRUE)
 
@@ -1577,6 +1842,8 @@ analyze_user_commits_with_syft_osv <- function(
     auto_min_commits_for_commit_parallel = 25L,
     syft_timeout_sec = 0L,
     syft_excludes = NULL,
+    syft_scan_parallel = FALSE,
+    syft_scan_workers = 1L,
     commit_info_parallel = FALSE,
     commit_info_workers = 4L,
     debug = FALSE,
@@ -1601,6 +1868,8 @@ analyze_user_commits_with_syft_osv <- function(
   .osv_assert_scalar_numeric_ge(auto_min_repos_for_repo_parallel, "auto_min_repos_for_repo_parallel", min_value = 1)
   .osv_assert_scalar_numeric_ge(auto_min_commits_for_commit_parallel, "auto_min_commits_for_commit_parallel", min_value = 1)
   .osv_assert_scalar_numeric_ge(syft_timeout_sec, "syft_timeout_sec", min_value = 0)
+  .osv_assert_scalar_logical(syft_scan_parallel, "syft_scan_parallel")
+  .osv_assert_scalar_numeric_ge(syft_scan_workers, "syft_scan_workers", min_value = 1)
   .osv_assert_scalar_logical(commit_info_parallel, "commit_info_parallel")
   .osv_assert_scalar_numeric_ge(commit_info_workers, "commit_info_workers", min_value = 1)
   .osv_assert_scalar_logical(debug, "debug")
@@ -1646,6 +1915,7 @@ analyze_user_commits_with_syft_osv <- function(
     stop("Could not extract GitHub username from `profile`.", call. = FALSE)
   }
   .debug_log(debug, "init", "username=", username, ", parallel_strategy=", parallel_strategy)
+  .osv_progress_reset()
 
   repos_df <- .resolve_repos_df(username = username, token = token, conn = conn)
   if (!is.data.frame(repos_df)) {
@@ -1840,6 +2110,7 @@ analyze_user_commits_with_syft_osv <- function(
     required_fns <- c(
       # repository analysis
       ".analyze_repository_commits",
+      ".scan_dependency_commit_job",
       ".prefetch_commit_details",
       ".gh_require",
       ".gh_repo_commits",
@@ -1848,6 +2119,10 @@ analyze_user_commits_with_syft_osv <- function(
       "commit_has_dependency_changes",
       ".debug_log",
       ".gitariki_log",
+      ".osv_progress_paths",
+      ".osv_progress_with_lock",
+      ".osv_progress_add_total",
+      ".osv_progress_add_done",
       ".osv_assert_scalar_character",
       ".osv_assert_scalar_logical",
       ".osv_assert_scalar_numeric_ge",
@@ -1953,6 +2228,7 @@ analyze_user_commits_with_syft_osv <- function(
       X = repo_tasks,
       fun = function(task, token, max_commits_per_repo, dependency_patterns, force_scan, temp_root,
                      keep_snapshots, include_uncertain, syft_resolved, syft_timeout_sec, syft_excludes,
+                     syft_scan_parallel, syft_scan_workers,
                      staged_all_mode, debug, debug_repo_every) {
         repo_full <- task$repo_full
         plan <- task$plan
@@ -1974,6 +2250,8 @@ analyze_user_commits_with_syft_osv <- function(
             osv_db_obj = .gitariki_worker_osv_db,
             syft_timeout_sec = syft_timeout_sec,
             syft_excludes = syft_excludes,
+            syft_scan_parallel = syft_scan_parallel,
+            syft_scan_workers = syft_scan_workers,
             commit_info_parallel = FALSE,
             commit_info_workers = 1L,
             prefetched_commits = if (!is.null(plan)) plan$commits else NULL,
@@ -2019,6 +2297,8 @@ analyze_user_commits_with_syft_osv <- function(
       syft_resolved = syft_resolved,
       syft_timeout_sec = as.integer(syft_timeout_sec),
       syft_excludes = syft_excludes,
+      syft_scan_parallel = FALSE,
+      syft_scan_workers = 1L,
       staged_all_mode = staged_all_mode,
       debug = debug,
       debug_repo_every = as.integer(debug_repo_every)
@@ -2046,6 +2326,8 @@ analyze_user_commits_with_syft_osv <- function(
         osv_db_obj = db_obj,
         syft_timeout_sec = syft_timeout_sec,
         syft_excludes = syft_excludes,
+        syft_scan_parallel = isTRUE(syft_scan_parallel),
+        syft_scan_workers = as.integer(syft_scan_workers),
         commit_info_parallel = if (isTRUE(staged_all_mode)) FALSE else commit_info_parallel_effective,
         commit_info_workers = if (isTRUE(staged_all_mode)) 1L else as.integer(commit_info_workers_effective),
         prefetched_commits = if (isTRUE(staged_all_mode)) .osv_null(repo_prefetch_plans[[repo_full]]$commits, NULL) else NULL,
@@ -2067,6 +2349,7 @@ analyze_user_commits_with_syft_osv <- function(
   )
   lifecycle_template <- c(
     "repository", "vulnerability_key", "osv_id",
+    "vulnerability_published", "vulnerability_modified",
     "query_purl", "matched_purl", "matched_package", "matched_ecosystem",
     "component_name", "component_purl",
     "introduced_sha", "introduced_date", "introduced_message", "introduced_author", "introduced_dependency_files",
