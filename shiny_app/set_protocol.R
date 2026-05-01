@@ -460,16 +460,32 @@ set_vulnerability_sections <- function(vulnerability_scan) {
   ))
 
   if (is.data.frame(scan$vulnerabilities) && nrow(scan$vulnerabilities) > 0L) {
+    vulnerabilities_table <- set_prepare_table(
+      scan$vulnerabilities,
+      c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "summary"),
+      c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "Описание"),
+      limit = 100L,
+      max_chars = 75L
+    )
+    if (nrow(vulnerabilities_table) > 0L) {
+      source_rows <- utils::head(scan$vulnerabilities, nrow(vulnerabilities_table))
+      if ("summary" %in% names(source_rows)) {
+        vulnerabilities_table[["Full summary"]] <- as.character(source_rows$summary)
+      }
+      if ("details" %in% names(source_rows)) {
+        vulnerabilities_table[["Full details"]] <- as.character(source_rows$details)
+      }
+      if ("aliases" %in% names(source_rows)) {
+        vulnerabilities_table[["Full aliases"]] <- as.character(source_rows$aliases)
+      }
+      if ("references" %in% names(source_rows)) {
+        vulnerabilities_table[["Full references"]] <- as.character(source_rows$references)
+      }
+    }
     sections[[length(sections) + 1L]] <- list(
       title = "Найденные уязвимости",
       text = "Первые найденные совпадения по пакетам и версиям. Подробные описания укорочены для читаемости.",
-      table = set_prepare_table(
-        scan$vulnerabilities,
-        c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "summary"),
-        c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "Описание"),
-        limit = 100L,
-        max_chars = 75L
-      )
+      table = vulnerabilities_table
     )
   }
 
@@ -495,9 +511,6 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       )
       lifecycle_names <- c(lifecycle_names[1:2], "Дата публикации уязвимости", lifecycle_names[3:9])
       names(lifecycle_table)[seq_len(10L)] <- lifecycle_names
-      introduced_commits <- lifecycle_table[[6L]]
-      lifecycle_table <- lifecycle_table[, -c(6L, 9L), drop = FALSE]
-      attr(lifecycle_table, "copy_commit_at_date") <- list(date_col = 6L, commits = introduced_commits)
       sections[[length(sections)]]$table <- lifecycle_table
     }
   }
@@ -972,7 +985,6 @@ set_run_parallel_collection <- function(profile,
 
     if (length(results) < length(tasks)) {
       done <- length(results)
-      progress(min(62L, 15L + done * 10L), paste0("Параллельный сбор данных: ", done, "/", length(tasks)))
       running_label <- if (length(running) > 0L) {
         paste(unname(task_labels[running]), collapse = ", ")
       } else {
@@ -982,7 +994,7 @@ set_run_parallel_collection <- function(profile,
         min(62L, 15L + done * 10L),
         paste0(
           "Параллельный сбор данных: ",
-          done, "/", length(tasks), "; в работе: ", running_label
+          done, "/", length(tasks), "\nВ работе: ", running_label
         )
       )
       Sys.sleep(0.35)

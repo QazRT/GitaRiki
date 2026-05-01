@@ -5,6 +5,12 @@ CLICKHOUSE_USER=your-user
 CLICKHOUSE_PASSWORD=your-password
 CLICKHOUSE_HTTPS=false
 
+GITHUB_CLIENT_ID=your-github-oauth-client-id
+GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
+# OAuth scopes requested when logging in through GitHub.
+# Use public_repo for public repositories; use repo if private repositories must be analyzed.
+GITHUB_OAUTH_SCOPE=read:user user:email public_repo
+
 CH_HOST=your-clickhouse-host
 CH_PORT=8123
 CH_DB=your-database

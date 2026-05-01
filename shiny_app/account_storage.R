@@ -155,7 +155,11 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
     "email String, ",
     "password_hash String, ",
     "nickname String, ",
+    "github_id String, ",
+    "github_login String, ",
     "github_token String, ",
+    "github_token_name String, ",
+    "github_token_expires_at Nullable(DateTime), ",
     "avatar_id String, ",
     "created_at DateTime, ",
     "updated_at DateTime, ",
@@ -165,6 +169,38 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
   )
 
   clickhouse_request(conn, sql, parse_json = FALSE)
+  clickhouse_request(
+    conn,
+    paste0(
+      "ALTER TABLE ", quote_table_ident(table_name, conn$dbname),
+      " ADD COLUMN IF NOT EXISTS github_id String"
+    ),
+    parse_json = FALSE
+  )
+  clickhouse_request(
+    conn,
+    paste0(
+      "ALTER TABLE ", quote_table_ident(table_name, conn$dbname),
+      " ADD COLUMN IF NOT EXISTS github_login String"
+    ),
+    parse_json = FALSE
+  )
+  clickhouse_request(
+    conn,
+    paste0(
+      "ALTER TABLE ", quote_table_ident(table_name, conn$dbname),
+      " ADD COLUMN IF NOT EXISTS github_token_name String"
+    ),
+    parse_json = FALSE
+  )
+  clickhouse_request(
+    conn,
+    paste0(
+      "ALTER TABLE ", quote_table_ident(table_name, conn$dbname),
+      " ADD COLUMN IF NOT EXISTS github_token_expires_at Nullable(DateTime)"
+    ),
+    parse_json = FALSE
+  )
   invisible(TRUE)
 }
 
@@ -320,6 +356,65 @@ get_githound_account <- function(conn, email, table_name = "githound_accounts") 
   query_clickhouse(conn, sql)
 }
 
+get_githound_account_by_github_id <- function(conn, github_id, github_email = "", table_name = "githound_accounts") {
+  ensure_githound_accounts_table(conn, table_name)
+  github_id <- trimws(enc2utf8(as.character(github_id %||% "")))
+  github_email <- normalize_githound_email(github_email %||% "")
+  if (!nzchar(github_id)) {
+    return(data.frame())
+  }
+
+  fallback_email <- paste0("github_", github_id, "@github.local")
+  predicates <- c(
+    paste0("github_id = ", githound_sql_string(github_id)),
+    paste0("user_id = ", githound_sql_string(paste0("github:", github_id))),
+    paste0("lower(email) = ", githound_sql_string(fallback_email))
+  )
+  if (nzchar(github_email)) {
+    predicates <- c(predicates, paste0("lower(email) = ", githound_sql_string(github_email)))
+  }
+
+  sql <- paste0(
+    "SELECT * FROM ",
+    quote_table_ident(table_name, conn$dbname),
+    " FINAL WHERE ",
+    paste(predicates, collapse = " OR "),
+    " ORDER BY ",
+    "if(github_id = ", githound_sql_string(github_id), ", 0, ",
+    "if(user_id = ", githound_sql_string(paste0("github:", github_id)), ", 1, ",
+    "if(lower(email) = ", githound_sql_string(fallback_email), ", 2, 3))), ",
+    "version DESC LIMIT 1"
+  )
+
+  query_clickhouse(conn, sql)
+}
+
+cleanup_githound_github_duplicates <- function(conn, github_id, keep_email, table_name = "githound_accounts") {
+  ensure_githound_accounts_table(conn, table_name)
+  github_id <- trimws(enc2utf8(as.character(github_id %||% "")))
+  keep_email <- normalize_githound_email(keep_email %||% "")
+  if (!nzchar(github_id) || !nzchar(keep_email)) {
+    return(invisible(FALSE))
+  }
+
+  fallback_email <- paste0("github_", github_id, "@github.local")
+  sql <- paste0(
+    "ALTER TABLE ",
+    quote_table_ident(table_name, conn$dbname),
+    " DELETE WHERE lower(email) != ",
+    githound_sql_string(keep_email),
+    " AND (github_id = ",
+    githound_sql_string(github_id),
+    " OR user_id = ",
+    githound_sql_string(paste0("github:", github_id)),
+    " OR lower(email) = ",
+    githound_sql_string(fallback_email),
+    ")"
+  )
+  clickhouse_request(conn, sql, parse_json = FALSE)
+  invisible(TRUE)
+}
+
 count_githound_accounts <- function(conn, email, table_name = "githound_accounts") {
   ensure_githound_accounts_table(conn, table_name)
   email <- normalize_githound_email(email)
@@ -398,7 +493,11 @@ register_githound_account <- function(
     email = email,
     password_hash = githound_password_hash(password),
     nickname = nickname,
+    github_id = "",
+    github_login = "",
     github_token = "",
+    github_token_name = "",
+    github_token_expires_at = NA_character_,
     avatar_id = avatar_id,
     created_at = now,
     updated_at = now,
@@ -416,6 +515,9 @@ login_or_register_github_account <- function(
     github_login,
     github_name = "",
     github_email = "",
+    github_token = "",
+    github_token_name = "GitHoundToken",
+    github_token_expires_at = NULL,
     avatar_id = "egypt_1",
     table_name = "githound_accounts"
 ) {
@@ -437,12 +539,34 @@ login_or_register_github_account <- function(
   }
   nickname <- if (nzchar(github_name)) github_name else github_login
 
-  existing <- get_githound_account(conn, email, table_name)
+  existing <- get_githound_account_by_github_id(conn, github_id, github_email = email, table_name = table_name)
   now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  github_token <- enc2utf8(github_token %||% "")
+  github_token_name <- enc2utf8(github_token_name %||% "")
+  github_token_expires_at <- if (is.null(github_token_expires_at) || !nzchar(github_token %||% "")) {
+    NA_character_
+  } else {
+    format(as.POSIXct(github_token_expires_at, tz = "UTC"), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  }
 
   if (is.data.frame(existing) && nrow(existing) > 0L) {
     row <- existing[1, , drop = FALSE]
+    if (!("github_id" %in% names(row))) {
+      row$github_id <- ""
+    }
+    if (!("github_login" %in% names(row))) {
+      row$github_login <- ""
+    }
+    row$github_id <- github_id
+    row$github_login <- github_login
+    if (identical(normalize_githound_email(row$email[[1]]), paste0("github_", github_id, "@github.local")) &&
+        nzchar(github_email)) {
+      row$email <- github_email
+    }
     row$nickname <- nickname
+    row$github_token <- github_token
+    row$github_token_name <- github_token_name
+    row$github_token_expires_at <- github_token_expires_at
     row$updated_at <- now
     row$version <- as.integer(as.numeric(Sys.time()))
   } else {
@@ -451,7 +575,11 @@ login_or_register_github_account <- function(
       email = email,
       password_hash = "github-oauth",
       nickname = nickname,
-      github_token = "",
+      github_id = github_id,
+      github_login = github_login,
+      github_token = github_token,
+      github_token_name = github_token_name,
+      github_token_expires_at = github_token_expires_at,
       avatar_id = avatar_id,
       created_at = now,
       updated_at = now,
@@ -461,9 +589,11 @@ login_or_register_github_account <- function(
   }
 
   load_df_to_clickhouse(row[, c(
-    "user_id", "email", "password_hash", "nickname", "github_token",
+    "user_id", "email", "password_hash", "nickname", "github_id", "github_login", "github_token",
+    "github_token_name", "github_token_expires_at",
     "avatar_id", "created_at", "updated_at", "version"
   ), drop = FALSE], table_name = table_name, conn = conn, append = TRUE)
+  try(cleanup_githound_github_duplicates(conn, github_id, row$email[[1]], table_name), silent = TRUE)
 
   row
 }
@@ -483,7 +613,21 @@ update_githound_account_profile <- function(
 
   now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
   row <- account[1, , drop = FALSE]
+  if (!("github_id" %in% names(row))) {
+    row$github_id <- ""
+  }
+  if (!("github_login" %in% names(row))) {
+    row$github_login <- ""
+  }
   row$github_token <- enc2utf8(github_token %||% "")
+  if (!("github_token_name" %in% names(row))) {
+    row$github_token_name <- ""
+  }
+  if (!("github_token_expires_at" %in% names(row))) {
+    row$github_token_expires_at <- NA_character_
+  }
+  row$github_token_name <- if (nzchar(row$github_token[[1]])) "ManualGitHubToken" else ""
+  row$github_token_expires_at <- NA_character_
   row$avatar_id <- enc2utf8(avatar_id %||% "egypt_1")
   row$updated_at <- now
 
@@ -493,6 +637,9 @@ update_githound_account_profile <- function(
     " UPDATE ",
     "github_token = ",
     githound_sql_string(row$github_token[[1]]),
+    ", github_token_name = ",
+    githound_sql_string(row$github_token_name[[1]]),
+    ", github_token_expires_at = NULL",
     ", avatar_id = ",
     githound_sql_string(row$avatar_id[[1]]),
     ", updated_at = toDateTime(",
