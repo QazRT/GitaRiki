@@ -311,6 +311,8 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
     vuln_max_repos <- set_env_int("GITHOUND_VULN_MAX_REPOS", default = NA_integer_, min_value = 1L)
     vuln_max_commits <- set_env_int("GITHOUND_VULN_MAX_COMMITS_PER_REPO", default = NA_integer_, min_value = 1L)
     syft_timeout <- set_env_int("GITHOUND_SYFT_TIMEOUT_SEC", default = 0L, min_value = 0L)
+    syft_scan_workers <- set_env_int("GITHOUND_SYFT_SCAN_WORKERS", default = max(1L, min(4L, scan_workers)), min_value = 1L)
+    syft_scan_parallel <- set_env_flag("GITHOUND_SYFT_SCAN_PARALLEL", default = syft_scan_workers > 1L)
     syft_excludes <- trimws(unlist(strsplit(Sys.getenv("GITHOUND_SYFT_EXCLUDES", ""), ",", fixed = TRUE)))
     syft_excludes <- syft_excludes[nzchar(syft_excludes)]
 
@@ -324,6 +326,8 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
       syft_path = syft_path,
       syft_timeout_sec = syft_timeout,
       syft_excludes = if (length(syft_excludes) > 0L) syft_excludes else NULL,
+      syft_scan_parallel = syft_scan_parallel,
+      syft_scan_workers = syft_scan_workers,
       debug = set_env_flag("GITHOUND_VULN_DEBUG", default = FALSE),
       token = token,
       conn = conn,
@@ -475,7 +479,7 @@ set_vulnerability_sections <- function(vulnerability_scan) {
       text = "Состояние найденных уязвимостей по истории коммитов.",
       table = set_prepare_table(
         scan$vulnerability_lifecycle,
-        c("repository", "osv_id", "status", "introduced_author", "introduced_sha", "introduced_date", "fixed_author", "fixed_sha", "fixed_date"),
+        c("repository", "osv_id", "vulnerability_published", "status", "introduced_author", "introduced_sha", "introduced_date", "fixed_author", "fixed_sha", "fixed_date"),
         c("Репозиторий", "OSV ID", "Статус", "Появилась в коммите", "Исправлена в коммите"),
         limit = 100L,
         max_chars = 70L
@@ -483,15 +487,17 @@ set_vulnerability_sections <- function(vulnerability_scan) {
     )
 
     lifecycle_table <- sections[[length(sections)]]$table
-    if (is.data.frame(lifecycle_table) && ncol(lifecycle_table) >= 9L) {
-      names(lifecycle_table)[seq_len(9L)] <- c(
+    if (is.data.frame(lifecycle_table) && ncol(lifecycle_table) >= 10L) {
+      lifecycle_names <- c(
         "Репозиторий", "OSV ID", "Статус",
         "Никнейм пользователя", "Появилась в коммите", "Дата появления",
         "Кто исправил", "Исправлена в коммите", "Дата исправления"
       )
-      introduced_commits <- lifecycle_table[[5L]]
-      lifecycle_table <- lifecycle_table[, -c(5L, 8L), drop = FALSE]
-      attr(lifecycle_table, "copy_commit_at_date") <- list(date_col = 5L, commits = introduced_commits)
+      lifecycle_names <- c(lifecycle_names[1:2], "Дата публикации уязвимости", lifecycle_names[3:9])
+      names(lifecycle_table)[seq_len(10L)] <- lifecycle_names
+      introduced_commits <- lifecycle_table[[6L]]
+      lifecycle_table <- lifecycle_table[, -c(6L, 9L), drop = FALSE]
+      attr(lifecycle_table, "copy_commit_at_date") <- list(date_col = 6L, commits = introduced_commits)
       sections[[length(sections)]]$table <- lifecycle_table
     }
   }

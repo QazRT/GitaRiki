@@ -55,6 +55,7 @@ tryCatch({
     }
     write_progress(value, progress_label)
   }
+  Sys.setenv(GITHOUND_PROTOCOL_PROGRESS_PATH = job$progress_path)
 
   result <- if (identical(job$protocol_type, "isis")) {
     run_isis_protocol(

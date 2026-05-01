@@ -37,6 +37,11 @@ GITHOUND_VULN_MAX_COMMITS_PER_REPO=
 # Per-Syft scan timeout in seconds. 0 means no timeout.
 GITHOUND_SYFT_TIMEOUT_SEC=0
 
+# Parallelize the heavy per-commit Syft + OSV result analysis when repository-level
+# parallelism is not already active.
+GITHOUND_SYFT_SCAN_PARALLEL=true
+GITHOUND_SYFT_SCAN_WORKERS=4
+
 # Comma-separated Syft exclude patterns, for example: **/node_modules/**,**/.git/**
 GITHOUND_SYFT_EXCLUDES=
 
