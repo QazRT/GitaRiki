@@ -45,7 +45,8 @@ tryCatch({
     commits = get_user_commits(
       profile = task$profile,
       token = task$token,
-      include_stats = TRUE,
+      include_stats = isTRUE(task$commit_include_stats %||% FALSE),
+      max_repos = task$commit_max_repos %||% NULL,
       conn = conn
     ),
     links = get_github_social_links(
@@ -56,7 +57,8 @@ tryCatch({
     user_info = get_github_user_info(
       profile = task$profile,
       token = task$token,
-      include_commit_stats = TRUE,
+      include_commit_stats = FALSE,
+      collect_commits = FALSE,
       conn = conn
     ),
     activity_timeline = get_github_user_activity_timeline(
