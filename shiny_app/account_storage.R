@@ -157,6 +157,7 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
     "nickname String, ",
     "github_token String, ",
     "avatar_id String, ",
+    "mythology_style String DEFAULT 'egypt', ",
     "created_at DateTime, ",
     "updated_at DateTime, ",
     "version UInt64",
@@ -187,6 +188,18 @@ ensure_githound_remember_table <- function(conn, table_name = "githound_remember
   )
 
   clickhouse_request(conn, sql, parse_json = FALSE)
+  try(
+    clickhouse_request(
+      conn,
+      paste0(
+        "ALTER TABLE ",
+        quote_table_ident(table_name, conn$dbname),
+        " ADD COLUMN IF NOT EXISTS mythology_style String DEFAULT 'egypt'"
+      ),
+      parse_json = FALSE
+    ),
+    silent = TRUE
+  )
   invisible(TRUE)
 }
 
@@ -400,6 +413,7 @@ register_githound_account <- function(
     nickname = nickname,
     github_token = "",
     avatar_id = avatar_id,
+    mythology_style = "egypt",
     created_at = now,
     updated_at = now,
     version = as.integer(as.numeric(Sys.time())),
@@ -453,6 +467,7 @@ login_or_register_github_account <- function(
       nickname = nickname,
       github_token = "",
       avatar_id = avatar_id,
+      mythology_style = "egypt",
       created_at = now,
       updated_at = now,
       version = as.integer(as.numeric(Sys.time())),
@@ -462,7 +477,7 @@ login_or_register_github_account <- function(
 
   load_df_to_clickhouse(row[, c(
     "user_id", "email", "password_hash", "nickname", "github_token",
-    "avatar_id", "created_at", "updated_at", "version"
+    "avatar_id", "mythology_style", "created_at", "updated_at", "version"
   ), drop = FALSE], table_name = table_name, conn = conn, append = TRUE)
 
   row
@@ -504,6 +519,40 @@ update_githound_account_profile <- function(
 
   clickhouse_request(conn, update_sql, parse_json = FALSE)
   row
+}
+
+update_githound_account_mythology_style <- function(
+    conn,
+    email,
+    mythology_style,
+    table_name = "githound_accounts"
+) {
+  email <- normalize_githound_email(email)
+  mythology_style <- tolower(trimws(enc2utf8(mythology_style %||% "egypt")))
+  if (!mythology_style %in% c("egypt", "norse", "greece")) {
+    mythology_style <- "egypt"
+  }
+  account <- get_githound_account(conn, email, table_name)
+  if (!is.data.frame(account) || nrow(account) == 0L) {
+    stop("Аккаунт не найден.", call. = FALSE)
+  }
+
+  now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  update_sql <- paste0(
+    "ALTER TABLE ",
+    quote_table_ident(table_name, conn$dbname),
+    " UPDATE mythology_style = ",
+    githound_sql_string(mythology_style),
+    ", updated_at = toDateTime(",
+    githound_sql_string(now),
+    ") WHERE lower(email) = ",
+    githound_sql_string(email)
+  )
+
+  clickhouse_request(conn, update_sql, parse_json = FALSE)
+  account$mythology_style <- mythology_style
+  account$updated_at <- now
+  account
 }
 
 `%||%` <- function(x, y) {

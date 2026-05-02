@@ -530,17 +530,46 @@ report_theme_value <- function(report, fallback = "hell") {
   theme
 }
 
+report_mythology_value <- function(report, fallback = "egypt") {
+  mythology <- report$mythology_style %||% report$launch_mythology %||% fallback
+  mythology <- tolower(trimws(as.character(mythology)))
+  if (!mythology %in% c("egypt", "norse", "greece")) {
+    mythology <- fallback
+  }
+  mythology
+}
+
 set_title_page <- function(report) {
   theme <- report$view_theme %||% report_theme_value(report, fallback = "hell")
   if (!theme %in% c("hell", "heaven")) {
     theme <- "hell"
   }
   is_heaven <- identical(theme, "heaven")
+  mythology <- report_mythology_value(report, fallback = "egypt")
+  is_norse <- identical(mythology, "norse")
   world <- if (is_heaven) "божественного мира" else "загробного мира"
   oath <- if (is_heaven) {
     "Свидетельство собрано под светом небесного суда: факты отделены от догадок, а следы цели сохранены в порядке."
   } else {
     "Свидетельство собрано у врат нижнего суда: факты отделены от догадок, а следы цели сохранены в порядке."
+  }
+  logo_src <- if (is_norse) {
+    if (is_heaven) "githound-norse-heaven-logo.png" else "githound-norse-logo.png"
+  } else {
+    if (is_heaven) "githound-heaven-logo.png" else "githound-hell-logo.png"
+  }
+  seals <- if (is_norse) {
+    list(
+      list(file = if (is_heaven) "seal-odin-heaven.png" else "seal-odin.png", name = "Один", note = "печать мудрого толкования"),
+      list(file = if (is_heaven) "seal-tyr-heaven.png" else "seal-tyr.png", name = "Тюр", note = "печать точного разбора"),
+      list(file = if (is_heaven) "seal-heimdall-heaven.png" else "seal-heimdall.png", name = "Хеймдалль", note = "печать зорких следов")
+    )
+  } else {
+    list(
+      list(file = "seal-isis.png", name = "Исида", note = "печать ясного толкования"),
+      list(file = "seal-set.png", name = "Сет", note = "печать сухого протокола"),
+      list(file = "seal-anubis.png", name = "Анубис", note = "печать взвешенных следов")
+    )
   }
 
   div(
@@ -548,7 +577,7 @@ set_title_page <- function(report) {
     div(
       class = "set-title-brand",
       img(
-        src = if (is_heaven) "githound-heaven-logo.png" else "githound-hell-logo.png",
+        src = logo_src,
         class = "set-title-logo",
         alt = "GitHound"
       ),
@@ -559,9 +588,14 @@ set_title_page <- function(report) {
     p(class = "set-title-oath", oath),
     div(
       class = "divine-seals",
-      div(class = "divine-seal seal-isis", img(src = "seal-isis.png", class = "divine-seal-image", alt = "Печать Исиды"), span("Исида"), tags$small("печать ясного толкования")),
-      div(class = "divine-seal seal-set", img(src = "seal-set.png", class = "divine-seal-image", alt = "Печать Сета"), span("Сет"), tags$small("печать сухого протокола")),
-      div(class = "divine-seal seal-anubis", img(src = "seal-anubis.png", class = "divine-seal-image", alt = "Печать Анубиса"), span("Анубис"), tags$small("печать взвешенных следов"))
+      lapply(seals, function(seal) {
+        div(
+          class = "divine-seal",
+          img(src = seal$file, class = "divine-seal-image", alt = paste("Печать", seal$name)),
+          span(seal$name),
+          tags$small(seal$note)
+        )
+      })
     ),
     div(class = "set-title-date", paste("Собран:", report$generated_at %||% ""))
   )
@@ -906,13 +940,29 @@ pdf_draw_title_page <- function(report, record, theme_mode = "hell") {
   theme <- pdf_theme(theme_mode)
   pdf_new_page(theme)
   is_heaven <- identical(theme_mode, "heaven")
+  mythology <- report_mythology_value(report, fallback = record$mythology_style %||% "egypt")
+  is_norse <- identical(mythology, "norse")
   world_title <- if (is_heaven) "ОТЧЕТ БОЖЕСТВЕННОГО\nМИРА" else "ОТЧЕТ ЗАГРОБНОГО\nМИРА"
   oath <- if (is_heaven) {
     "Свидетельство собрано под светом небесного суда: факты отделены от догадок, а следы цели сохранены в порядке."
   } else {
     "Свидетельство собрано у врат нижнего суда: факты отделены от догадок, а следы цели сохранены в порядке."
   }
-  logo_file <- if (is_heaven) pdf_asset_path("githound-heaven-logo.png") else pdf_asset_path("githound-hell-logo.png")
+  logo_file <- if (is_norse) {
+    if (is_heaven) pdf_asset_path("githound-norse-heaven-logo.png") else pdf_asset_path("githound-norse-logo.png")
+  } else {
+    if (is_heaven) pdf_asset_path("githound-heaven-logo.png") else pdf_asset_path("githound-hell-logo.png")
+  }
+  seal_files <- if (is_norse) {
+    c(
+      if (is_heaven) "seal-odin-heaven.png" else "seal-odin.png",
+      if (is_heaven) "seal-tyr-heaven.png" else "seal-tyr.png",
+      if (is_heaven) "seal-heimdall-heaven.png" else "seal-heimdall.png"
+    )
+  } else {
+    c("seal-isis.png", "seal-set.png", "seal-anubis.png")
+  }
+  seal_names <- if (is_norse) c("Один", "Тюр", "Хеймдалль") else c("Исида", "Сет", "Анубис")
   pdf_draw_raster(logo_file, 0.36, 0.78, 0.64, 0.98)
   graphics::text(0.5, 0.73, "GITHOUND", adj = c(0.5, 0.5), cex = 2.1, font = 2, col = if (is_heaven) "#d31d1d" else theme$ink)
   graphics::text(0.5, 0.58, world_title, adj = c(0.5, 0.5), cex = 2.55, font = 2, col = theme$ink)
@@ -925,12 +975,12 @@ pdf_draw_title_page <- function(report, record, theme_mode = "hell") {
   }
   seal_y0 <- 0.065
   seal_y1 <- 0.255
-  pdf_draw_raster(pdf_asset_path("seal-isis.png"), 0.11, seal_y0, 0.33, seal_y1)
-  pdf_draw_raster(pdf_asset_path("seal-set.png"), 0.39, seal_y0, 0.61, seal_y1)
-  pdf_draw_raster(pdf_asset_path("seal-anubis.png"), 0.67, seal_y0, 0.89, seal_y1)
-  graphics::text(0.22, 0.055, "Исида", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
-  graphics::text(0.50, 0.055, "Сет", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
-  graphics::text(0.78, 0.055, "Анубис", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  pdf_draw_raster(pdf_asset_path(seal_files[[1]]), 0.11, seal_y0, 0.33, seal_y1)
+  pdf_draw_raster(pdf_asset_path(seal_files[[2]]), 0.39, seal_y0, 0.61, seal_y1)
+  pdf_draw_raster(pdf_asset_path(seal_files[[3]]), 0.67, seal_y0, 0.89, seal_y1)
+  graphics::text(0.22, 0.055, seal_names[[1]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.50, 0.055, seal_names[[2]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.78, 0.055, seal_names[[3]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
 }
 
 pdf_draw_plot_page <- function(path, label, theme) {
@@ -3590,13 +3640,32 @@ server <- function(input, output, session) {
     email = NULL,
     nickname = NULL,
     avatar_id = "egypt_1",
-    github_token = ""
+    github_token = "",
+    mythology_style = "egypt"
   )
   protocol_queue <- reactiveVal(list())
   protocol_active_job <- reactiveVal(NULL)
   protocol_worker <- reactiveVal(NULL)
   protocol_job_dir <- file.path(tempdir(), "githound_protocol_jobs")
   dir.create(protocol_job_dir, recursive = TRUE, showWarnings = FALSE)
+
+  normalize_mythology_style <- function(value) {
+    value <- tolower(trimws(as.character(value %||% "egypt")))
+    if (!value %in% c("egypt", "norse", "greece")) {
+      value <- "egypt"
+    }
+    value
+  }
+
+  apply_account_mythology_style <- function(value) {
+    value <- normalize_mythology_style(value)
+    if (identical(value, "greece")) {
+      value <- "egypt"
+    }
+    account$mythology_style <- value
+    mythology_style(value)
+    invisible(value)
+  }
 
   protocol_new_job_id <- function() {
     paste0(
@@ -3772,6 +3841,7 @@ server <- function(input, output, session) {
     set_report(NULL)
     active_protocol(protocol_type)
     launch_theme <- theme_mode()
+    launch_mythology <- mythology_style()
     load_user_archive()
     archive_same_target(target, protocol_type)
     current_page("set_loading")
@@ -3802,6 +3872,8 @@ server <- function(input, output, session) {
           report <- result$report
           report$theme <- launch_theme
           report$view_theme <- launch_theme
+          report$mythology_style <- launch_mythology
+          report$view_mythology <- launch_mythology
           set_report(report)
           add_report_to_archive(report, target)
           current_page("set_report")
@@ -3841,6 +3913,8 @@ server <- function(input, output, session) {
           report <- result$report
           report$theme <- launch_theme
           report$view_theme <- launch_theme
+          report$mythology_style <- launch_mythology
+          report$view_mythology <- launch_mythology
           set_report(report)
           add_report_to_archive(report, target)
           current_page("set_report")
@@ -3880,6 +3954,8 @@ server <- function(input, output, session) {
         report <- result$report
         report$theme <- launch_theme
         report$view_theme <- launch_theme
+        report$mythology_style <- launch_mythology
+        report$view_mythology <- launch_mythology
         set_report(report)
         add_report_to_archive(report, target)
         current_page("set_report")
@@ -4149,6 +4225,7 @@ server <- function(input, output, session) {
     account$nickname <- NULL
     account$avatar_id <- "egypt_1"
     account$github_token <- ""
+    apply_account_mythology_style("egypt")
     remember_token(NULL)
     remember_attempted(TRUE)
     report_archive(list())
@@ -4266,11 +4343,17 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$style_egypt, {
-    mythology_style("egypt")
+    apply_account_mythology_style("egypt")
+    if (nzchar(account$email %||% "")) {
+      try(update_githound_account_mythology_style(conn, account$email, "egypt"), silent = TRUE)
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$style_norse, {
-    mythology_style("norse")
+    apply_account_mythology_style("norse")
+    if (nzchar(account$email %||% "")) {
+      try(update_githound_account_mythology_style(conn, account$email, "norse"), silent = TRUE)
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$style_greece, {
@@ -4291,6 +4374,7 @@ server <- function(input, output, session) {
       account$nickname <- created$nickname[[1]]
       account$avatar_id <- created$avatar_id[[1]]
       account$github_token <- created$github_token[[1]] %||% ""
+      apply_account_mythology_style(created$mythology_style[[1]] %||% "egypt")
       load_user_archive()
       current_page("analysis")
       notify_user("Аккаунт сохранён в ClickHouse.", type = "message")
@@ -4311,6 +4395,7 @@ server <- function(input, output, session) {
       account$nickname <- logged_in$nickname[[1]]
       account$avatar_id <- logged_in$avatar_id[[1]]
       account$github_token <- logged_in$github_token[[1]] %||% ""
+      apply_account_mythology_style(logged_in$mythology_style[[1]] %||% "egypt")
       load_user_archive()
       if (isTRUE(input$remember_me)) {
         token_info <- issue_githound_remember_token(conn, logged_in$email[[1]], days = 30L)
@@ -4390,6 +4475,7 @@ server <- function(input, output, session) {
       account$nickname <- logged_in$nickname[[1]]
       account$avatar_id <- logged_in$avatar_id[[1]]
       account$github_token <- logged_in$github_token[[1]] %||% ""
+      apply_account_mythology_style(logged_in$mythology_style[[1]] %||% "egypt")
       remember_attempted(TRUE)
       load_user_archive()
       current_page("analysis")
@@ -4436,6 +4522,7 @@ server <- function(input, output, session) {
       account$nickname <- remembered$nickname[[1]]
       account$avatar_id <- remembered$avatar_id[[1]]
       account$github_token <- remembered$github_token[[1]] %||% ""
+      apply_account_mythology_style(remembered$mythology_style[[1]] %||% "egypt")
       remember_token(token)
       load_user_archive()
       current_page("analysis")
