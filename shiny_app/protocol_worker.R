@@ -63,6 +63,13 @@ tryCatch({
       conn = job$conn,
       progress = progress
     )
+  } else if (identical(job$protocol_type, "quality")) {
+    run_quality_protocol(
+      profile = job$target,
+      token = job$token,
+      conn = job$conn,
+      progress = progress
+    )
   } else {
     run_set_protocol(
       profile = job$target,
