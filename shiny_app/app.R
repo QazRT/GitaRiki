@@ -696,6 +696,11 @@ set_report_screen <- function(report) {
   protocol_label <- report$protocol_label %||% if (identical(protocol_type, "isis")) "Исида" else "Сет"
   switch_button <- if (identical(protocol_type, "set")) {
     actionButton("run_isis_after_report", "Запустить Исиду", class = "run-button")
+  } else if (identical(protocol_type, "quality")) {
+    tagList(
+      actionButton("run_set_after_report", "Запустить Сета", class = "run-button"),
+      actionButton("run_isis_after_report", "Запустить Исиду", class = "run-button")
+    )
   } else {
     actionButton("run_set_after_report", "Запустить Сета", class = "run-button")
   }
@@ -834,7 +839,7 @@ complete_github_oauth <- function(code, redirect_uri) {
 }
 
 archive_protocol_label <- function(protocol_type) {
-  switch(tolower(protocol_type %||% "set"), set = "Сет", isis = "Исида", protocol_type %||% "—")
+  switch(tolower(protocol_type %||% "set"), set = "Сет", isis = "Исида", quality = "Маат", protocol_type %||% "—")
 }
 
 pdf_theme <- function(mode = "hell") {
@@ -2266,8 +2271,8 @@ ui <- fluidPage(
       }
 
       .protocol-page {
-        width: min(100%, 820px);
-        max-width: 820px;
+        width: min(100%, 1080px);
+        max-width: 1080px;
       }
 
       .protocol-form {
@@ -2276,7 +2281,7 @@ ui <- fluidPage(
 
       .protocol-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(240px, 1fr));
+        grid-template-columns: repeat(3, minmax(220px, 1fr));
         gap: 18px;
         width: 100%;
         justify-content: center;
@@ -4228,7 +4233,7 @@ server <- function(input, output, session) {
       return(invisible(FALSE))
     }
 
-    if (identical(protocol_type, "set")) {
+    if (protocol_type %in% c("set", "quality")) {
       if (!nzchar(token)) {
         if (isTRUE(account_github_token_expired())) {
           notify_user("GitHoundToken истек. Войдите через GitHub еще раз, чтобы выпустить новый токен.", type = "error", duration = 8)
@@ -4288,11 +4293,12 @@ server <- function(input, output, session) {
       }
     } else {
       token <- account_github_token()
+      protocol_start_label <- paste("Запуск протокола", archive_protocol_label(protocol_type))
       set_progress$value <- 0
-      set_progress$label <- "Запуск протокола Сет"
+      set_progress$label <- protocol_start_label
       try(session$flushReact(), silent = TRUE)
-      session$sendCustomMessage("setSetProgress", list(value = 0, label = "Запуск протокола Сет"))
-      progress_label <- "Запуск протокола Сет"
+      session$sendCustomMessage("setSetProgress", list(value = 0, label = protocol_start_label))
+      progress_label <- protocol_start_label
 
       run_job <- function() {
         tryCatch({
@@ -5038,6 +5044,10 @@ server <- function(input, output, session) {
 
   observeEvent(input$run_set, {
     launch_protocol("set")
+  })
+
+  observeEvent(input$run_quality, {
+    launch_protocol("quality")
   })
 
   observeEvent(input$run_isis_after_report, {

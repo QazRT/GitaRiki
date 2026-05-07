@@ -33,6 +33,7 @@ load_set_protocol_dependencies <- function() {
     "R/OSV-mongo.R",
     "R/Syft-sbom.R",
     "R/Commit-dependency-analysis.R",
+    "R/CodeQualityAnalyzer.R",
     "R/Analysis-Helpers.R",
     "R/Analysis-Activity.R",
     "R/Analysis-Popularity.R",
@@ -720,6 +721,224 @@ build_set_protocol_report <- function(profile,
     vulnerability_scan = vulnerability_scan,
     output_dir = if (is.list(analysis)) analysis$output_dir else NA_character_,
     summary_path = if (is.list(analysis)) analysis$summary_path else NA_character_
+  )
+}
+
+quality_overall_value <- function(overall, metric, default = NA) {
+  if (!is.data.frame(overall) || !all(c("metric", "value") %in% names(overall))) {
+    return(default)
+  }
+  row <- overall[overall$metric == metric, , drop = FALSE]
+  if (nrow(row) == 0L) {
+    return(default)
+  }
+  row$value[[1]]
+}
+
+quality_named_score_table <- function(overall) {
+  labels <- c(
+    overall_score = "Итоговый скор качества",
+    deterministic_score = "Детерминированный скор",
+    ai_score = "AI best-practice скор",
+    ai_weight = "Вес AI в итоговом скоре",
+    ai_confidence = "AI confidence",
+    maintainability_score = "Сопровождаемость",
+    test_score = "Тестируемость",
+    ci_score = "CI/CD",
+    docs_score = "Документация",
+    security_score = "Security / supply chain",
+    activity_score = "Актуальность",
+    confidence = "Уверенность оценки"
+  )
+  rows <- lapply(names(labels), function(metric) {
+    data.frame(
+      "Показатель" = labels[[metric]],
+      "Значение" = quality_overall_value(overall, metric, "—"),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, rows)
+}
+
+build_quality_protocol_report <- function(profile, quality) {
+  overall <- quality$overall %||% data.frame()
+  metrics <- quality$repo_metrics %||% data.frame()
+  findings <- quality$findings %||% data.frame()
+  ai_review <- quality$ai_review %||% list(status = "skipped", message = "AI review was not run.")
+  repositories <- quality$repositories %||% data.frame()
+  scanned <- quality$scanned_repositories %||% data.frame()
+  config <- quality$config %||% list()
+  ai <- ai_review$parsed %||% list()
+
+  overview <- data.frame(
+    "Показатель" = c(
+      "Цель",
+      "Итоговый скор",
+      "Уверенность",
+      "Репозиториев найдено",
+      "Репозиториев просканировано",
+      "Findings всего",
+      "Findings high",
+      "Findings medium"
+    ),
+    "Значение" = c(
+      profile,
+      quality_overall_value(overall, "overall_score", "—"),
+      quality_overall_value(overall, "confidence", "—"),
+      quality_overall_value(overall, "repositories_total", nrow(repositories)),
+      quality_overall_value(overall, "repositories_scanned", nrow(scanned)),
+      quality_overall_value(overall, "findings_total", if (is.data.frame(findings)) nrow(findings) else 0L),
+      quality_overall_value(overall, "high_findings", 0L),
+      quality_overall_value(overall, "medium_findings", 0L)
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  config_table <- data.frame(
+    "Параметр" = c("Лимит репозиториев", "Потоки", "Лимит файлов дерева", "Private-доступ", "AI review", "AI code lines", "Архивы включены", "Форки включены"),
+    "Значение" = c(
+      config$max_repos %||% "—",
+      config$workers %||% "—",
+      config$max_tree_files %||% "—",
+      config$include_private %||% TRUE,
+      ai_review$status %||% "skipped",
+      config$ai_code_lines %||% Sys.getenv("GITHOUND_QUALITY_AI_CODE_LINES", unset = "100"),
+      config$include_archived %||% FALSE,
+      config$include_forks %||% FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  sections <- list(
+    list(
+      title = "Сводка качества кода",
+      text = "MVP-протокол Маат считает качество по проверяемым следам: структуре файлов, языкам, тестам, CI, документации, dependency/lock-файлам, активности и контексту репозитория.",
+      table = overview
+    ),
+    list(
+      title = "Скоры по направлениям",
+      text = "Итоговая оценка взвешена по важности репозиториев; confidence показывает, насколько полной была доступная evidence-база.",
+      table = quality_named_score_table(overall)
+    ),
+    list(
+      title = "Репозитории",
+      text = "Первая партия репозиториев, отсортированная по свежести push-событий и ограниченная настройками env.",
+      table = set_prepare_table(
+        metrics,
+        c("repository", "context", "primary_language", "quality_score", "confidence", "code_files", "test_files", "ci_files", "dependency_files", "lock_files"),
+        c("Репозиторий", "Контекст", "Язык", "Скор", "Confidence", "Code files", "Tests", "CI", "Deps", "Locks"),
+        limit = 12L,
+        max_chars = 80L
+      )
+    ),
+    list(
+      title = "Findings",
+      text = "Проверяемые замечания с категорией, severity и конкретным evidence-текстом.",
+      table = set_prepare_table(
+        findings,
+        c("repository", "severity", "category", "title", "evidence", "confidence"),
+        c("Репозиторий", "Severity", "Категория", "Finding", "Evidence", "Confidence"),
+        limit = 12L,
+        max_chars = 110L
+      )
+    ),
+    list(
+      title = "AI review",
+      text = "Отдельная AI-оценка читабельности, best practices, структуры и вероятных признаков AI-generated кода по выбранным фрагментам и evidence из ClickHouse.",
+      table = data.frame(
+        "Показатель" = c(
+          "Статус",
+          "Скор",
+          "Confidence",
+          "Readability",
+          "Best practices",
+          "Structure",
+          "AI-generated likelihood",
+          "Краткий вывод"
+        ),
+        "Значение" = c(
+          ai_review$status %||% "skipped",
+          ai$score %||% "—",
+          ai$confidence %||% "—",
+          ai$readability_score %||% "—",
+          ai$best_practice_score %||% "—",
+          ai$structure_score %||% "—",
+          ai$ai_generated_likelihood %||% "—",
+          ai$summary %||% ai_review$message %||% "—"
+        ),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+    ),
+    list(
+      title = "AI selected files",
+      text = "Файлы, которые AI выбрала по структуре репозиториев для последующей загрузки фрагментов кода.",
+      table = set_prepare_table(
+        ai_review$selected_files %||% data.frame(),
+        c("repository", "path", "reason"),
+        c("Репозиторий", "Файл", "Причина выбора"),
+        limit = 12L,
+        max_chars = 110L
+      )
+    ),
+    list(
+      title = "Конфигурация запуска",
+      text = "Эти параметры можно менять через .Renviron без правки кода.",
+      table = config_table
+    )
+  )
+
+  list(
+    profile = profile,
+    protocol_type = "quality",
+    protocol_label = "Маат",
+    generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    overview = overview,
+    sections = sections,
+    plots = character(),
+    vulnerability_scan = list(status = "not_applicable", message = "not_applicable"),
+    output_dir = NA_character_,
+    summary_path = NA_character_,
+    quality = quality
+  )
+}
+
+run_quality_protocol <- function(profile,
+                                 token,
+                                 conn,
+                                 progress = function(value, label = NULL) NULL) {
+  profile <- trimws(as.character(profile %||% ""))
+  token <- trimws(as.character(token %||% ""))
+
+  if (!nzchar(profile)) {
+    stop("Не указана цель.", call. = FALSE)
+  }
+  if (!nzchar(token)) {
+    stop("В личном кабинете не указан GitHub токен.", call. = FALSE)
+  }
+
+  load_set_protocol_dependencies()
+  if (!exists("analyze_code_quality_profile", mode = "function")) {
+    stop("analyze_code_quality_profile() is not loaded.", call. = FALSE)
+  }
+
+  progress(5, "Запуск протокола Маат")
+  quality <- analyze_code_quality_profile(
+    profile = profile,
+    token = token,
+    conn = conn,
+    progress = progress
+  )
+  report <- build_quality_protocol_report(profile = profile, quality = quality)
+  progress(100, "Отчет Маат готов")
+
+  list(
+    profile = profile,
+    quality = quality,
+    report = report
   )
 }
 
