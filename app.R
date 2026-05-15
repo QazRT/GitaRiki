@@ -6,6 +6,6 @@ if (dir.exists(project_lib)) {
 shiny::runApp(
   appDir = file.path(getwd(), "shiny_app"),
   host = "127.0.0.1",
-  port = 3838,
+  port = 3837,
   launch.browser = FALSE
 )

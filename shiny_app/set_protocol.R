@@ -33,6 +33,7 @@ load_set_protocol_dependencies <- function() {
     "R/OSV-mongo.R",
     "R/Syft-sbom.R",
     "R/Commit-dependency-analysis.R",
+    "R/CodeQualityAnalyzer.R",
     "R/Analysis-Helpers.R",
     "R/Analysis-Activity.R",
     "R/Analysis-Popularity.R",
@@ -112,6 +113,13 @@ set_prepare_table <- function(df, cols = NULL, ru_names = NULL, limit = 8L, max_
   }
 
   df
+}
+
+set_extract_cve <- function(...) {
+  values <- paste(as.character(unlist(list(...), use.names = FALSE)), collapse = " ")
+  m <- regexpr("CVE-[0-9]{4}-[0-9]{4,}", values, ignore.case = TRUE, perl = TRUE)
+  if (m[[1]] < 0L) return("")
+  toupper(regmatches(values, m)[[1]])
 }
 
 set_metric_labels <- c(
@@ -315,6 +323,10 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
     syft_scan_parallel <- set_env_flag("GITHOUND_SYFT_SCAN_PARALLEL", default = syft_scan_workers > 1L)
     syft_excludes <- trimws(unlist(strsplit(Sys.getenv("GITHOUND_SYFT_EXCLUDES", ""), ",", fixed = TRUE)))
     syft_excludes <- syft_excludes[nzchar(syft_excludes)]
+    syft_target_mode <- trimws(Sys.getenv("GITHOUND_SYFT_TARGET_MODE", "manifest_first"))
+    if (!syft_target_mode %in% c("snapshot", "manifest", "manifest_first")) {
+      syft_target_mode <- "manifest_first"
+    }
 
     scan_args <- list(
       profile = profile,
@@ -326,6 +338,7 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
       syft_path = syft_path,
       syft_timeout_sec = syft_timeout,
       syft_excludes = if (length(syft_excludes) > 0L) syft_excludes else NULL,
+      syft_target_mode = syft_target_mode,
       syft_scan_parallel = syft_scan_parallel,
       syft_scan_workers = syft_scan_workers,
       debug = set_env_flag("GITHOUND_VULN_DEBUG", default = FALSE),
@@ -346,6 +359,21 @@ run_set_vulnerability_scan <- function(profile, token, conn = NULL, progress = f
       diagnose_commit_scan_result(scan)
     } else {
       list()
+    }
+
+    scan_errors <- if (is.data.frame(scan$errors)) scan$errors else data.frame()
+    if ((diagnostics$total_commits %||% 0L) == 0L && nrow(scan_errors) > 0L) {
+      first_error <- as.character(scan_errors$error[[1]])
+      is_rate_limit <- any(grepl("rate limit", scan_errors$error, ignore.case = TRUE), na.rm = TRUE)
+      return(list(
+        status = if (is_rate_limit) "connection_error" else "error",
+        message = paste0(
+          "Проверка уязвимостей не смогла получить коммиты GitHub: ",
+          first_error
+        ),
+        scan = scan,
+        diagnostics = diagnostics
+      ))
     }
 
     list(status = "ok", message = paste("Поиск уязвимостей выполнен."), scan = scan, diagnostics = diagnostics)
@@ -387,6 +415,33 @@ set_clickhouse_tables_by_mask <- function(conn, mask = "github_*") {
   names <- as.character(tables$name)
   names <- names[!is.na(names) & nzchar(names)]
   names[grepl(utils::glob2rx(mask), names)]
+}
+
+set_isis_system_prompt <- function() {
+  if (exists("mcp_default_ai_assets", mode = "function")) {
+    assets <- tryCatch(mcp_default_ai_assets(), error = function(e) NULL)
+    if (is.list(assets)) {
+      parts <- c(
+        assets$prompts$system %||% "",
+        assets$prompts$role %||% "",
+        assets$rag$clickhouse_context %||% "",
+        assets$rag$security_rules %||% ""
+      )
+      parts <- parts[nzchar(trimws(parts))]
+      if (length(parts) > 0L) {
+        return(paste(parts, collapse = "\n\n---\n\n"))
+      }
+    }
+  }
+
+  tryCatch(
+    mcp_read_ai_file("prompts", "system.md"),
+    error = function(e) paste(
+      "You are an analytical assistant.",
+      "Use ClickHouse tools only for read-only data access.",
+      "Always answer the user in Russian."
+    )
+  )
 }
 
 set_plot_label <- function(path) {
@@ -460,15 +515,35 @@ set_vulnerability_sections <- function(vulnerability_scan) {
   ))
 
   if (is.data.frame(scan$vulnerabilities) && nrow(scan$vulnerabilities) > 0L) {
+    vuln_rows <- scan$vulnerabilities
+    score <- if ("cvss_base_score" %in% names(vuln_rows)) {
+      suppressWarnings(as.numeric(vuln_rows$cvss_base_score))
+    } else {
+      rep(NA_real_, nrow(vuln_rows))
+    }
+    vector <- if ("cvss_vector" %in% names(vuln_rows)) as.character(vuln_rows$cvss_vector) else rep("", nrow(vuln_rows))
+    severity <- if ("cvss_severity" %in% names(vuln_rows)) as.character(vuln_rows$cvss_severity) else rep("", nrow(vuln_rows))
+    vuln_rows$cvss_31_display <- ifelse(
+      !is.na(score),
+      paste0(format(round(score, 1), nsmall = 1), ifelse(nzchar(severity), paste0(" ", severity), "")),
+      ifelse(grepl("^CVSS:3\\.1/", vector), vector, "")
+    )
+    vuln_rows$epss_request <- "EPSS"
+    vuln_rows$epss_cve <- vapply(seq_len(nrow(vuln_rows)), function(i) {
+      set_extract_cve(
+        vuln_rows$osv_id[[i]],
+        if ("aliases" %in% names(vuln_rows)) vuln_rows$aliases[[i]] else ""
+      )
+    }, character(1))
     vulnerabilities_table <- set_prepare_table(
-      scan$vulnerabilities,
-      c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "summary"),
-      c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "Описание"),
+      vuln_rows,
+      c("repository", "sha", "matched_ecosystem", "component_name", "component_version", "osv_id", "cvss_31_display", "epss_request", "epss_cve", "summary"),
+      c("Репозиторий", "Коммит", "Экосистема", "Пакет", "Версия", "Vuln ID", "CVSS 3.1", "EPSS", "EPSS CVE", "Описание"),
       limit = 100L,
       max_chars = 75L
     )
     if (nrow(vulnerabilities_table) > 0L) {
-      source_rows <- utils::head(scan$vulnerabilities, nrow(vulnerabilities_table))
+      source_rows <- utils::head(vuln_rows, nrow(vulnerabilities_table))
       if ("summary" %in% names(source_rows)) {
         vulnerabilities_table[["Full summary"]] <- as.character(source_rows$summary)
       }
@@ -723,6 +798,224 @@ build_set_protocol_report <- function(profile,
   )
 }
 
+quality_overall_value <- function(overall, metric, default = NA) {
+  if (!is.data.frame(overall) || !all(c("metric", "value") %in% names(overall))) {
+    return(default)
+  }
+  row <- overall[overall$metric == metric, , drop = FALSE]
+  if (nrow(row) == 0L) {
+    return(default)
+  }
+  row$value[[1]]
+}
+
+quality_named_score_table <- function(overall) {
+  labels <- c(
+    overall_score = "Итоговый скор качества",
+    deterministic_score = "Детерминированный скор",
+    ai_score = "AI best-practice скор",
+    ai_weight = "Вес AI в итоговом скоре",
+    ai_confidence = "AI confidence",
+    maintainability_score = "Сопровождаемость",
+    test_score = "Тестируемость",
+    ci_score = "CI/CD",
+    docs_score = "Документация",
+    security_score = "Security / supply chain",
+    activity_score = "Актуальность",
+    confidence = "Уверенность оценки"
+  )
+  rows <- lapply(names(labels), function(metric) {
+    data.frame(
+      "Показатель" = labels[[metric]],
+      "Значение" = quality_overall_value(overall, metric, "—"),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, rows)
+}
+
+build_quality_protocol_report <- function(profile, quality) {
+  overall <- quality$overall %||% data.frame()
+  metrics <- quality$repo_metrics %||% data.frame()
+  findings <- quality$findings %||% data.frame()
+  ai_review <- quality$ai_review %||% list(status = "skipped", message = "AI review was not run.")
+  repositories <- quality$repositories %||% data.frame()
+  scanned <- quality$scanned_repositories %||% data.frame()
+  config <- quality$config %||% list()
+  ai <- ai_review$parsed %||% list()
+
+  overview <- data.frame(
+    "Показатель" = c(
+      "Цель",
+      "Итоговый скор",
+      "Уверенность",
+      "Репозиториев найдено",
+      "Репозиториев просканировано",
+      "Findings всего",
+      "Findings high",
+      "Findings medium"
+    ),
+    "Значение" = c(
+      profile,
+      quality_overall_value(overall, "overall_score", "—"),
+      quality_overall_value(overall, "confidence", "—"),
+      quality_overall_value(overall, "repositories_total", nrow(repositories)),
+      quality_overall_value(overall, "repositories_scanned", nrow(scanned)),
+      quality_overall_value(overall, "findings_total", if (is.data.frame(findings)) nrow(findings) else 0L),
+      quality_overall_value(overall, "high_findings", 0L),
+      quality_overall_value(overall, "medium_findings", 0L)
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  config_table <- data.frame(
+    "Параметр" = c("Лимит репозиториев", "Потоки", "Лимит файлов дерева", "Private-доступ", "AI review", "AI code lines", "Архивы включены", "Форки включены"),
+    "Значение" = c(
+      config$max_repos %||% "—",
+      config$workers %||% "—",
+      config$max_tree_files %||% "—",
+      config$include_private %||% TRUE,
+      ai_review$status %||% "skipped",
+      config$ai_code_lines %||% Sys.getenv("GITHOUND_QUALITY_AI_CODE_LINES", unset = "100"),
+      config$include_archived %||% FALSE,
+      config$include_forks %||% FALSE
+    ),
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  sections <- list(
+    list(
+      title = "Сводка качества кода",
+      text = "MVP-протокол Маат считает качество по проверяемым следам: структуре файлов, языкам, тестам, CI, документации, dependency/lock-файлам, активности и контексту репозитория.",
+      table = overview
+    ),
+    list(
+      title = "Скоры по направлениям",
+      text = "Итоговая оценка взвешена по важности репозиториев; confidence показывает, насколько полной была доступная evidence-база.",
+      table = quality_named_score_table(overall)
+    ),
+    list(
+      title = "Репозитории",
+      text = "Первая партия репозиториев, отсортированная по свежести push-событий и ограниченная настройками env.",
+      table = set_prepare_table(
+        metrics,
+        c("repository", "context", "primary_language", "quality_score", "confidence", "code_files", "test_files", "ci_files", "dependency_files", "lock_files"),
+        c("Репозиторий", "Контекст", "Язык", "Скор", "Confidence", "Code files", "Tests", "CI", "Deps", "Locks"),
+        limit = 12L,
+        max_chars = 80L
+      )
+    ),
+    list(
+      title = "Findings",
+      text = "Проверяемые замечания с категорией, severity и конкретным evidence-текстом.",
+      table = set_prepare_table(
+        findings,
+        c("repository", "severity", "category", "title", "evidence", "confidence"),
+        c("Репозиторий", "Severity", "Категория", "Finding", "Evidence", "Confidence"),
+        limit = 12L,
+        max_chars = 110L
+      )
+    ),
+    list(
+      title = "AI review",
+      text = "Отдельная AI-оценка читабельности, best practices, структуры и вероятных признаков AI-generated кода по выбранным фрагментам и evidence из ClickHouse.",
+      table = data.frame(
+        "Показатель" = c(
+          "Статус",
+          "Скор",
+          "Confidence",
+          "Readability",
+          "Best practices",
+          "Structure",
+          "AI-generated likelihood",
+          "Краткий вывод"
+        ),
+        "Значение" = c(
+          ai_review$status %||% "skipped",
+          ai$score %||% "—",
+          ai$confidence %||% "—",
+          ai$readability_score %||% "—",
+          ai$best_practice_score %||% "—",
+          ai$structure_score %||% "—",
+          ai$ai_generated_likelihood %||% "—",
+          ai$summary %||% ai_review$message %||% "—"
+        ),
+        check.names = FALSE,
+        stringsAsFactors = FALSE
+      )
+    ),
+    list(
+      title = "AI selected files",
+      text = "Файлы, которые AI выбрала по структуре репозиториев для последующей загрузки фрагментов кода.",
+      table = set_prepare_table(
+        ai_review$selected_files %||% data.frame(),
+        c("repository", "path", "reason"),
+        c("Репозиторий", "Файл", "Причина выбора"),
+        limit = 12L,
+        max_chars = 110L
+      )
+    ),
+    list(
+      title = "Конфигурация запуска",
+      text = "Эти параметры можно менять через .Renviron без правки кода.",
+      table = config_table
+    )
+  )
+
+  list(
+    profile = profile,
+    protocol_type = "quality",
+    protocol_label = "Маат",
+    generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    overview = overview,
+    sections = sections,
+    plots = character(),
+    vulnerability_scan = list(status = "not_applicable", message = "not_applicable"),
+    output_dir = NA_character_,
+    summary_path = NA_character_,
+    quality = quality
+  )
+}
+
+run_quality_protocol <- function(profile,
+                                 token,
+                                 conn,
+                                 progress = function(value, label = NULL) NULL) {
+  profile <- trimws(as.character(profile %||% ""))
+  token <- trimws(as.character(token %||% ""))
+
+  if (!nzchar(profile)) {
+    stop("Не указана цель.", call. = FALSE)
+  }
+  if (!nzchar(token)) {
+    stop("В личном кабинете не указан GitHub токен.", call. = FALSE)
+  }
+
+  load_set_protocol_dependencies()
+  if (!exists("analyze_code_quality_profile", mode = "function")) {
+    stop("analyze_code_quality_profile() is not loaded.", call. = FALSE)
+  }
+
+  progress(5, "Запуск протокола Маат")
+  quality <- analyze_code_quality_profile(
+    profile = profile,
+    token = token,
+    conn = conn,
+    progress = progress
+  )
+  report <- build_quality_protocol_report(profile = profile, quality = quality)
+  progress(100, "Отчет Маат готов")
+
+  list(
+    profile = profile,
+    quality = quality,
+    report = report
+  )
+}
+
 run_isis_protocol <- function(profile,
                               conn,
                               progress = function(value, label = NULL) NULL) {
@@ -749,16 +1042,18 @@ run_isis_protocol <- function(profile,
       call. = FALSE
     )
   }
+  system_prompt <- set_isis_system_prompt()
 
   result <- mcp_chat_with_clickhouse(
     question = paste(
       "Посмотри всю информацию по пользователю",
       profile,
-      "и сделай психологический портрет пользователя с описанием его привычек, характера работы, отношения к безопасности разрабатываемых продуктов и общего психологического портрета"
+      "и сделай психологический портрет пользователя с описанием его привычек, характера работы, качества написания кода и содержания репозиториев, отношения к безопасности разрабатываемых продуктов и общего психологического портрета"
     ),
     conn = conn,
     allowed_tables = allowed_tables,
     max_rows = 5000,
+    system_prompt = system_prompt,
     max_tool_rounds = 20,
     progressbar = progress,
     verbose_tools = TRUE

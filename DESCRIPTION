@@ -13,13 +13,13 @@ Authors@R: c(
       given = "Соколова",
       family = "Мария",
       email = "kyashinura@yandex.ru",
-      role = c("aut", "cre")
+      role = c("aut")
     ),
     person(
       given = "Миронов",
       family = "Павел",
       email = "mironovpavel@yandex.ru",
-      role = c("aut", "cre")
+      role = c("aut")
     )
     )
 Author: Zargarov Aleksandr, Sokolova Maria, Mironov Pavel

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 78" role="img" aria-label="Mini Mjolnir">
+  <defs>
+    <linearGradient id="ice" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.42" stop-color="#aeeaff"/>
+      <stop offset="1" stop-color="#2f75a8"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eefbff"/>
+      <stop offset="0.52" stop-color="#7fb4d2"/>
+      <stop offset="1" stop-color="#20384d"/>
+    </linearGradient>
+    <filter id="frost-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <path d="M12 50 C34 36 62 32 92 39 C113 44 132 40 142 28 C136 54 111 68 82 61 C55 55 34 60 12 50 Z" fill="#dff8ff" opacity=".34" filter="url(#frost-glow)"/>
+  <g transform="translate(76 38) rotate(-15) translate(-76 -38)" filter="url(#frost-glow)">
+    <path d="M42 18 H104 C111 18 116 23 116 30 V43 C116 50 111 55 104 55 H42 C35 55 30 50 30 43 V30 C30 23 35 18 42 18 Z" fill="url(#metal)" stroke="#e9fbff" stroke-width="4"/>
+    <path d="M49 25 H97 M43 36 H106 M49 48 H97" stroke="#19304a" stroke-width="3" opacity=".52" stroke-linecap="round"/>
+    <path d="M70 53 H87 V73 H70 Z" fill="url(#ice)" stroke="#e9fbff" stroke-width="4"/>
+    <path d="M74 59 H83 M74 66 H83" stroke="#24415f" stroke-width="3" opacity=".55" stroke-linecap="round"/>
+    <path d="M29 28 L15 20 M29 45 L15 54 M117 28 L135 18 M117 45 L135 57" stroke="#bdf2ff" stroke-width="5" stroke-linecap="round"/>
+    <path d="M58 16 L50 6 M93 17 L103 6 M58 57 L50 67 M96 56 L106 66" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity=".8"/>
+  </g>
+</svg>
