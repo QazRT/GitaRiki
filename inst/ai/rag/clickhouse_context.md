@@ -1,7 +1,7 @@
 # ClickHouse Context
 
 The package can store extracted GitHub, repository, commit, link, dependency,
-SBOM, and vulnerability data in ClickHouse.
+SBOM, quality scan results and vulnerability data in ClickHouse.
 
 The AI module exposes ClickHouse through three tools:
 

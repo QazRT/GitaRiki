@@ -281,6 +281,21 @@ protocol_screen <- function(target) {
             ),
             class = "run-button"
           )
+        ),
+        div(
+          class = "protocol-card",
+          img(src = "protocol-maat.png", class = "protocol-image protocol-egypt-image protocol-hell-image", alt = "Маат"),
+          img(src = "protocol-maat-heaven.png", class = "protocol-image protocol-egypt-image protocol-heaven-image", alt = "Маат"),
+          img(src = "protocol-thor.png", class = "protocol-image protocol-norse-image protocol-norse-hell-image", alt = "Тор"),
+          img(src = "protocol-thor-heaven.png", class = "protocol-image protocol-norse-image protocol-norse-heaven-image", alt = "Тор"),
+          actionButton(
+            "run_quality",
+            tagList(
+              span(class = "protocol-label-egypt", "Запуск протокола Маат"),
+              span(class = "protocol-label-norse", "Запуск протокола Тор")
+            ),
+            class = "run-button"
+          )
         )
       ),
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
@@ -362,6 +377,23 @@ set_table_ui <- function(df) {
     df <- df[, -c(5L, 8L), drop = FALSE]
     copy_commit_at_date <- list(date_col = 5L, commits = introduced_commits)
   }
+  copy_commit_in_repository <- NULL
+  repo_col <- which(names(df) %in% c("Репозиторий", "Repository", "Р РµРїРѕР·РёС‚РѕСЂРёР№"))
+  vuln_commit_col <- which(names(df) %in% c("Коммит", "Commit", "РљРѕРјРјРёС‚"))
+  is_found_vulnerability_table <- length(repo_col) > 0L &&
+    length(vuln_commit_col) > 0L &&
+    "Vuln ID" %in% names(df) &&
+    "EPSS" %in% names(df)
+  if (isTRUE(is_found_vulnerability_table)) {
+    commit_col <- vuln_commit_col[[1L]]
+    repo_col_i <- repo_col[[1L]]
+    vulnerability_commits <- as.character(df[[commit_col]])
+    df <- df[, -commit_col, drop = FALSE]
+    if (commit_col < repo_col_i) {
+      repo_col_i <- repo_col_i - 1L
+    }
+    copy_commit_in_repository <- list(repo_col = repo_col_i, commits = vulnerability_commits)
+  }
   copy_commit_mappings <- if (is.list(copy_commit_at_date) && !is.null(copy_commit_at_date$mappings)) {
     copy_commit_at_date$mappings
   } else if (is.list(copy_commit_at_date) && !is.null(copy_commit_at_date$date_col)) {
@@ -414,19 +446,92 @@ set_table_ui <- function(df) {
       ))
     }
   }
+  if (length(full_text_mappings) == 0L) {
+    fallback_description_col <- which(names(df) %in% c("\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", "Description"))
+    if (length(fallback_description_col) == 0L) {
+      fallback_description_col <- grep("descr|\\u041e\\u043f\\u0438\\u0441", names(df), ignore.case = TRUE)
+    }
+    if (length(fallback_description_col) > 0L && "Vuln ID" %in% names(df)) {
+      fallback_description_col <- fallback_description_col[[1L]]
+      full_values <- list(
+        summary = if (!is.na(full_summary_col)) as.character(df[[full_summary_col]]) else as.character(df[[fallback_description_col]]),
+        details = if (!is.na(full_details_col)) as.character(df[[full_details_col]]) else rep("", nrow(df)),
+        aliases = if (!is.na(full_aliases_col)) as.character(df[[full_aliases_col]]) else rep("", nrow(df)),
+        references = if (!is.na(full_references_col)) as.character(df[[full_references_col]]) else rep("", nrow(df))
+      )
+      if (length(hidden_full_cols) > 0L) {
+        df <- df[, -hidden_full_cols, drop = FALSE]
+        fallback_description_col <- which(names(df) %in% c("\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", "Description"))
+        if (length(fallback_description_col) == 0L) {
+          fallback_description_col <- grep("descr|\\u041e\\u043f\\u0438\\u0441", names(df), ignore.case = TRUE)
+        }
+      }
+      if (length(fallback_description_col) > 0L) {
+        title_col <- which(names(df) %in% c("Vuln ID", "OSV ID"))
+        full_text_mappings <- list(list(
+          text_col = fallback_description_col[[1L]],
+          values = full_values$summary,
+          details = full_values$details,
+          aliases = full_values$aliases,
+          references = full_values$references,
+          title_col = if (length(title_col) > 0L) title_col[[1L]] else NA_integer_
+        ))
+      }
+    }
+  }
   full_text_mapping_for_col <- function(col_index) {
     matches <- Filter(function(mapping) {
       identical(as.integer(col_index), as.integer(mapping[["text_col"]]))
     }, full_text_mappings)
     if (length(matches) > 0L) matches[[1L]] else NULL
   }
+  epss_cve_col <- which(names(df) %in% c("EPSS CVE", "epss_cve"))
+  epss_cves <- if (length(epss_cve_col) > 0L) {
+    as.character(df[[epss_cve_col[[1L]]]])
+  } else {
+    rep("", nrow(df))
+  }
+  if (length(epss_cve_col) > 0L) {
+    removed_col <- epss_cve_col[[1L]]
+    df <- df[, -removed_col, drop = FALSE]
+    full_text_mappings <- lapply(full_text_mappings, function(mapping) {
+      if (is.list(mapping) && !is.null(mapping[["text_col"]]) && mapping[["text_col"]] > removed_col) {
+        mapping[["text_col"]] <- mapping[["text_col"]] - 1L
+      }
+      if (is.list(mapping) && !is.null(mapping[["title_col"]]) && !is.na(mapping[["title_col"]]) && mapping[["title_col"]] > removed_col) {
+        mapping[["title_col"]] <- mapping[["title_col"]] - 1L
+      }
+      mapping
+    })
+  }
   df <- utils::head(df, 12L)
+  epss_cves <- utils::head(epss_cves, nrow(df))
+  if (is.list(copy_commit_in_repository) && !is.null(copy_commit_in_repository$commits)) {
+    copy_commit_in_repository$commits <- utils::head(copy_commit_in_repository$commits, nrow(df))
+  }
   return(div(
     class = "set-report-table-wrap",
     tags$table(
       class = "set-report-table",
       tags$thead(
-        tags$tr(lapply(names(df), function(name) tags$th(name)))
+        tags$tr(lapply(names(df), function(name) {
+          if (identical(name, "EPSS")) {
+            tags$th(
+              div(
+                class = "epss-header-cell",
+                span(name),
+                tags$button(
+                  type = "button",
+                  class = "epss-fetch-all-button",
+                  title = "Запросить EPSS для всех строк",
+                  HTML("&#128065;")
+                )
+              )
+            )
+          } else {
+            tags$th(name)
+          }
+        }))
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
@@ -435,6 +540,46 @@ set_table_ui <- function(df) {
             display_value <- value
             if (is.na(display_value) || !nzchar(display_value)) {
               display_value <- "\u2014"
+            }
+            if (is.list(copy_commit_in_repository) &&
+                identical(j, copy_commit_in_repository$repo_col) &&
+                !is.null(copy_commit_in_repository$commits) &&
+                length(copy_commit_in_repository$commits) >= i) {
+              commit <- as.character(copy_commit_in_repository$commits[[i]])
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = commit,
+                      "SHA"
+                    )
+                  )
+                ))
+              }
+            }
+            if (identical(names(df)[[j]], "EPSS")) {
+              cve <- if (length(epss_cves) >= i) as.character(epss_cves[[i]]) else ""
+              if (!is.na(cve) && nzchar(cve)) {
+                return(tags$td(
+                  div(
+                    class = "epss-cell",
+                    span(class = "epss-value", "\u2014"),
+                    tags$button(
+                      type = "button",
+                      class = "epss-fetch-button",
+                      `data-cve` = cve,
+                      title = paste("Fetch EPSS for", cve),
+                      "EPSS"
+                    )
+                  )
+                ))
+              }
             }
             commit_mapping <- commit_mapping_for_col(j)
             if (is.list(commit_mapping)) {
@@ -1434,6 +1579,73 @@ ui <- fluidPage(
           window.setTimeout(function() {
             button.removeClass('copied').text(previous);
           }, 900);
+        });
+      });
+
+      function fetchEpssButton(button) {
+        var cve = String(button.attr('data-cve') || '').trim().toUpperCase();
+        var cell = button.closest('.epss-cell');
+        var value = cell.find('.epss-value');
+        if (!cve || button.prop('disabled')) return Promise.resolve(false);
+
+        button.prop('disabled', true).text('...');
+        return fetch('https://api.first.org/data/v1/epss?cve=' + encodeURIComponent(cve), {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        })
+          .then(function(response) {
+            if (!response.ok) throw new Error('EPSS HTTP ' + response.status);
+            return response.json();
+          })
+          .then(function(payload) {
+            var row = payload && payload.data && payload.data.length ? payload.data[0] : null;
+            if (!row || row.epss === undefined || row.epss === null) {
+              value.text('нет данных');
+              return;
+            }
+            var epss = Number(row.epss);
+            var percentile = Number(row.percentile);
+            var text = isFinite(epss) ? (epss * 100).toFixed(2) + '%' : String(row.epss);
+            value.empty().append(document.createTextNode(text));
+            if (isFinite(percentile)) {
+              value.append($('<span/>', {
+                class: 'epss-percentile',
+                text: 'Perc: ' + (percentile * 100).toFixed(1) + '%'
+              }));
+            }
+            button.hide();
+          })
+          .catch(function(error) {
+            value.text('ошибка');
+            button.attr('title', error.message || 'EPSS request failed');
+          })
+          .finally(function() {
+            if (button.is(':visible')) {
+              button.prop('disabled', false).text('EPSS');
+            }
+          });
+      }
+
+      $(document).on('click', '.epss-fetch-button', function() {
+        fetchEpssButton($(this));
+      });
+
+      $(document).on('click', '.epss-fetch-all-button', function() {
+        var allButton = $(this);
+        if (allButton.prop('disabled')) return;
+        var table = allButton.closest('table');
+        var buttons = table.find('tbody .epss-fetch-button:visible').toArray();
+        if (!buttons.length) return;
+
+        allButton.prop('disabled', true).text('...');
+        var chain = Promise.resolve();
+        buttons.forEach(function(btn) {
+          chain = chain.then(function() {
+            return fetchEpssButton($(btn));
+          });
+        });
+        chain.finally(function() {
+          allButton.prop('disabled', false).text(String.fromCodePoint(128065));
         });
       });
 
@@ -2996,6 +3208,39 @@ ui <- fluidPage(
         white-space: normal;
       }
 
+      .epss-header-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .epss-fetch-all-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .epss-fetch-all-button:hover,
+      .epss-fetch-all-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .epss-fetch-all-button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
       .set-markdown table {
         width: 100%;
         margin: 10px 0;
@@ -3067,6 +3312,53 @@ ui <- fluidPage(
 
       body.heaven-theme .copy-commit-button {
         background: rgba(211, 29, 29, 0.07);
+      }
+
+      .epss-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 118px;
+      }
+
+      .epss-value {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .epss-percentile {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .epss-fetch-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 48px;
+        height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 12px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .epss-fetch-button:hover,
+      .epss-fetch-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .epss-fetch-button:disabled {
+        cursor: wait;
+        opacity: 0.65;
       }
 
       .full-text-button {
@@ -4016,7 +4308,10 @@ server <- function(input, output, session) {
     token <- trimws(as.character(token %||% ""))
     headers <- c(
       Accept = "application/vnd.github+json",
-      `User-Agent` = "GitHound-Shiny"
+      `User-Agent` = "GitHound-Shiny",
+      `X-GitHub-Api-Version` = "2022-11-28",
+      `Cache-Control` = "no-cache",
+      Pragma = "no-cache"
     )
     if (nzchar(token)) {
       headers <- c(headers, Authorization = paste("Bearer", token))
@@ -4034,15 +4329,29 @@ server <- function(input, output, session) {
 
     payload <- jsonlite::fromJSON(text, simplifyVector = FALSE)
     core <- payload$resources$core %||% payload$rate %||% list()
-    remaining <- suppressWarnings(as.integer(core$remaining %||% NA_integer_))
-    limit <- suppressWarnings(as.integer(core$limit %||% NA_integer_))
-    reset <- suppressWarnings(as.numeric(core$reset %||% NA_real_))
+    response_headers <- httr::headers(response)
+    header_value <- function(name) {
+      value <- response_headers[[name]] %||% response_headers[[tolower(name)]]
+      if (is.null(value) || length(value) == 0L) NA_character_ else as.character(value[[1L]])
+    }
+    header_int <- function(name) suppressWarnings(as.integer(header_value(name)))
+    header_num <- function(name) suppressWarnings(as.numeric(header_value(name)))
+
+    remaining <- suppressWarnings(as.integer(core$remaining %||% header_int("x-ratelimit-remaining")))
+    limit <- suppressWarnings(as.integer(core$limit %||% header_int("x-ratelimit-limit")))
+    reset <- suppressWarnings(as.numeric(core$reset %||% header_num("x-ratelimit-reset")))
+    resource <- header_value("x-ratelimit-resource")
+    if (is.na(resource) || !nzchar(trimws(resource))) {
+      resource <- "core"
+    }
 
     list(
       status = "ok",
       remaining = remaining,
       limit = limit,
       reset = reset,
+      used = suppressWarnings(as.integer(core$used %||% header_int("x-ratelimit-used"))),
+      resource = as.character(resource),
       updated_at = Sys.time(),
       source = if (nzchar(token)) "account" else "anonymous",
       error = NULL
@@ -4088,9 +4397,8 @@ server <- function(input, output, session) {
       !isTRUE(github_oauth_processed())
   }
 
-  observe({
-    token <- account_github_token()
-    invalidateLater(60000, session)
+  refresh_github_rate_limit <- function() {
+    token <- isolate(account_github_token())
     github_rate_limit(tryCatch(
       fetch_github_rate_limit(token),
       error = function(e) list(
@@ -4103,6 +4411,12 @@ server <- function(input, output, session) {
         error = conditionMessage(e)
       )
     ))
+  }
+
+  observe({
+    active_job <- protocol_active_job()
+    invalidateLater(if (is.null(active_job)) 60000 else 10000, session)
+    refresh_github_rate_limit()
   })
 
   protocol_write_progress <- function(path, value = 0, label = NULL) {
@@ -4137,6 +4451,7 @@ server <- function(input, output, session) {
     protocol_active_job(NULL)
     protocol_worker(NULL)
     try(unlink(c(job$progress_path, job$input_path)), silent = TRUE)
+    refresh_github_rate_limit()
 
     if (is.list(result) && isTRUE(result$ok)) {
       job$on_success(result$result)
@@ -5150,10 +5465,16 @@ server <- function(input, output, session) {
       "загрузка /rate_limit"
     }
     source_label <- if (identical(rate$source, "account")) "токен аккаунта" else "анонимно"
+    resource_label <- trimws(as.character(rate$resource %||% "core"))
+    if (!nzchar(resource_label) || is.na(resource_label)) {
+      resource_label <- "core"
+    }
+    updated_at <- rate$updated_at %||% Sys.time()
+    updated_label <- format(as.POSIXct(updated_at, tz = display_tz), "%H:%M:%S")
     title <- if (identical(rate$status, "error") && nzchar(rate$error %||% "")) {
       rate$error
     } else {
-      paste("GitHub /rate_limit:", source_label)
+      paste("GitHub /rate_limit:", source_label, "resource", resource_label, "updated", updated_label)
     }
 
     div(
