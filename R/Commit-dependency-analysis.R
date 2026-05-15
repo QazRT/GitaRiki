@@ -757,6 +757,10 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   .ch_add_column_if_missing(conn, tables$lifecycle, "vulnerability_modified", "Nullable(String)")
   .ch_add_column_if_missing(conn, tables$lifecycle, "introduced_author", "Nullable(String)")
   .ch_add_column_if_missing(conn, tables$lifecycle, "fixed_author", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$vulnerabilities, "cvss_version", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$vulnerabilities, "cvss_vector", "Nullable(String)")
+  .ch_add_column_if_missing(conn, tables$vulnerabilities, "cvss_base_score", "Nullable(Float64)")
+  .ch_add_column_if_missing(conn, tables$vulnerabilities, "cvss_severity", "Nullable(String)")
 
   .ch_delete_profile_rows(conn, tables$summary, profile)
   .ch_delete_profile_rows(conn, tables$vulnerabilities, profile)
@@ -905,6 +909,118 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
   list(work_dir = work_dir, repo_dir = repo_dir, zip_path = zip_path)
 }
 
+.github_path_dirname <- function(path) {
+  d <- dirname(path)
+  if (identical(d, ".") || identical(d, "/")) "" else gsub("\\\\", "/", d)
+}
+
+.github_path_join <- function(dir, file) {
+  if (!is.character(dir) || length(dir) == 0L || is.na(dir[[1]]) || !nzchar(trimws(dir[[1]]))) {
+    file
+  } else {
+    paste(gsub("/+$", "", dir[[1]]), file, sep = "/")
+  }
+}
+
+.github_encode_path <- function(path) {
+  norm <- gsub("\\\\", "/", as.character(path))
+  norm <- gsub("^/+", "", norm)
+  parts <- strsplit(norm, "/", fixed = TRUE)[[1]]
+  paste(vapply(parts, utils::URLencode, character(1), reserved = TRUE), collapse = "/")
+}
+
+.dependency_companion_files <- function(dep_files) {
+  norm <- unique(gsub("\\\\", "/", as.character(dep_files)))
+  norm <- norm[nzchar(norm)]
+  out <- norm
+  add <- function(dir, files) {
+    out <<- unique(c(out, vapply(files, function(f) .github_path_join(dir, f), character(1))))
+  }
+
+  for (path in norm) {
+    dir <- .github_path_dirname(path)
+    base <- basename(path)
+    lower <- tolower(base)
+
+    if (grepl("^(package(-lock)?\\.json|npm-shrinkwrap\\.json|yarn\\.lock|pnpm-lock\\.ya?ml|bun\\.lockb?|bower\\.json)$", lower)) {
+      add(dir, c("package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "bower.json"))
+    } else if (lower %in% c("go.mod", "go.sum", "modules.txt")) {
+      add(dir, c("go.mod", "go.sum"))
+      if (grepl("(^|/)vendor/modules\\.txt$", path, ignore.case = TRUE)) {
+        parent_dir <- .github_path_dirname(.github_path_dirname(path))
+        add(parent_dir, c("go.mod", "go.sum"))
+      }
+    } else if (lower %in% c("cargo.toml", "cargo.lock")) {
+      add(dir, c("Cargo.toml", "Cargo.lock"))
+    } else if (grepl("^(pyproject\\.toml|poetry\\.lock|uv\\.lock|pdm\\.lock|pipfile(\\.lock)?|setup\\.(py|cfg)|requirements.*\\.txt|constraints.*\\.txt)$", lower)) {
+      add(dir, c("pyproject.toml", "poetry.lock", "uv.lock", "pdm.lock", "Pipfile", "Pipfile.lock", "setup.py", "setup.cfg", "requirements.txt", "constraints.txt"))
+    } else if (grepl("^(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.lockfile|ivy\\.xml|build\\.sbt)$", lower)) {
+      add(dir, c("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradle.lockfile", "ivy.xml", "build.sbt"))
+      if (grepl("^project/", path, ignore.case = TRUE)) {
+        add("project", c("build.properties", "plugins.sbt"))
+      }
+    } else if (lower %in% c("description", "renv.lock", "pak.lock", "packages.r", "requirements.r", "install.r")) {
+      add(dir, c("DESCRIPTION", "renv.lock", "pak.lock", "packages.R", "requirements.R", "install.R"))
+    } else if (grepl("^(composer\\.(json|lock)|gemfile(\\.lock)?|podfile(\\.lock)?|pubspec\\.(yaml|lock)|mix\\.(exs|lock))$", lower)) {
+      add(dir, c("composer.json", "composer.lock", "Gemfile", "Gemfile.lock", "Podfile", "Podfile.lock", "pubspec.yaml", "pubspec.lock", "mix.exs", "mix.lock"))
+    }
+  }
+
+  unique(out)
+}
+
+.download_repo_files_target <- function(repo_full, sha, files, token = NULL, temp_root = tempdir()) {
+  if (!requireNamespace("curl", quietly = TRUE)) {
+    stop("Package 'curl' is required but not installed.", call. = FALSE)
+  }
+
+  files <- unique(gsub("\\\\", "/", as.character(files)))
+  files <- files[nzchar(files)]
+  if (length(files) == 0L) return(NULL)
+
+  stamp <- gsub("[^A-Za-z0-9._-]", "-", paste0(repo_full, "-", sha))
+  work_dir <- file.path(temp_root, paste0("repo-manifests-", stamp, "-", as.integer(stats::runif(1, 100000, 999999))))
+  target_dir <- file.path(work_dir, "content")
+  dir.create(target_dir, recursive = TRUE, showWarnings = FALSE)
+
+  h <- curl::new_handle()
+  headers <- c("User-Agent" = "GitaRiki-OSV-Scanner")
+  if (!is.null(token) && nzchar(token)) {
+    headers["Authorization"] <- paste("Bearer", token)
+  }
+  curl::handle_setheaders(h, .list = headers)
+
+  downloaded <- character(0)
+  missing <- character(0)
+  for (path in files) {
+    rel <- gsub("^/+", "", path)
+    raw_url <- paste0(
+      "https://raw.githubusercontent.com/",
+      repo_full, "/", utils::URLencode(sha, reserved = TRUE), "/",
+      .github_encode_path(rel)
+    )
+    dest <- file.path(target_dir, rel)
+    dir.create(dirname(dest), recursive = TRUE, showWarnings = FALSE)
+    ok <- tryCatch({
+      curl::curl_download(url = raw_url, destfile = dest, mode = "wb", handle = h)
+      file.exists(dest)
+    }, error = function(e) FALSE)
+    if (isTRUE(ok)) {
+      downloaded <- c(downloaded, rel)
+    } else {
+      missing <- c(missing, rel)
+      if (file.exists(dest)) unlink(dest, force = TRUE)
+    }
+  }
+
+  if (length(downloaded) == 0L) {
+    unlink(work_dir, recursive = TRUE, force = TRUE)
+    return(NULL)
+  }
+
+  list(work_dir = work_dir, repo_dir = target_dir, files = unique(downloaded), missing = unique(missing))
+}
+
 .rbind_data_frames <- function(dfs, template_cols = NULL) {
   valid <- Filter(function(x) is.data.frame(x), dfs)
   valid <- Filter(function(x) nrow(x) > 0L, valid)
@@ -922,11 +1038,43 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 
 .parse_commit_datetime <- function(x) {
   if (!.osv_non_empty(x)) return(as.POSIXct(NA))
-  ts <- suppressWarnings(as.POSIXct(as.character(x), tz = "UTC"))
-  if (is.na(ts)) {
-    ts <- suppressWarnings(as.POSIXct(as.character(x), format = "%Y-%m-%d %H:%M:%S", tz = "UTC"))
+  value <- trimws(as.character(x[[1]]))
+
+  # GitHub returns ISO-8601 values like 2026-05-02T16:11:28Z. Base R's
+  # default parser may silently keep only the date on Windows, so parse the
+  # full timestamp explicitly before falling back to looser formats.
+  offset_value <- sub("([+-][0-9]{2}):([0-9]{2})$", "\\1\\2", value)
+  candidates <- unique(c(
+    offset_value,
+    value,
+    sub("Z$", "", value),
+    sub("\\s+UTC$", "", value, ignore.case = TRUE)
+  ))
+  formats <- c(
+    "%Y-%m-%dT%H:%M:%OSZ",
+    "%Y-%m-%dT%H:%M:%OS%z",
+    "%Y-%m-%d %H:%M:%OS%z",
+    "%Y-%m-%dT%H:%M:%OS",
+    "%Y-%m-%d %H:%M:%OS",
+    "%Y-%m-%d"
+  )
+
+  for (candidate in candidates) {
+    candidate_formats <- if (grepl("[+-][0-9]{2}:?[0-9]{2}$", candidate)) {
+      formats[grepl("%z", formats, fixed = TRUE)]
+    } else {
+      formats
+    }
+    for (fmt in candidate_formats) {
+      ts <- tryCatch(
+        suppressWarnings(as.POSIXct(candidate, format = fmt, tz = "UTC")),
+        error = function(e) as.POSIXct(NA)
+      )
+      if (!is.na(ts)) return(ts)
+    }
   }
-  ts
+
+  suppressWarnings(as.POSIXct(value, tz = "UTC"))
 }
 
 .vuln_lifecycle_key <- function(row_df) {
@@ -1241,10 +1389,12 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
                                         syft_resolved,
                                         osv_db_obj,
                                         syft_timeout_sec = 0L,
-                                        syft_excludes = NULL) {
+                                        syft_excludes = NULL,
+                                        syft_target_mode = "snapshot") {
   repo_full <- job$repo_full
   sha <- job$sha
   dep_files <- .osv_null(job$dep_files, character(0))
+  syft_target_mode <- match.arg(syft_target_mode, c("snapshot", "manifest", "manifest_first"))
   errors <- list()
   append_error <- function(stage, err) {
     errors[[length(errors) + 1L]] <<- data.frame(
@@ -1256,19 +1406,14 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     )
   }
 
-  snapshot <- tryCatch(
-    .download_repo_snapshot(repo_full, sha = sha, token = token, temp_root = temp_root),
-    error = function(e) {
-      append_error("download_snapshot", conditionMessage(e))
-      NULL
-    }
-  )
-
   scan <- NULL
-  if (!is.null(snapshot)) {
-    scan <- tryCatch(
+  scan_source <- NA_character_
+  target <- NULL
+
+  run_scan <- function(target_path, error_stage) {
+    tryCatch(
       scan_path_with_syft_and_osv(
-        target_path = snapshot$repo_dir,
+        target_path = target_path,
         osv_db = osv_db_obj,
         syft_path = syft_resolved,
         include_uncertain = include_uncertain,
@@ -1277,13 +1422,58 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         syft_excludes = syft_excludes
       ),
       error = function(e) {
-        append_error("syft_or_osv_scan", conditionMessage(e))
+        append_error(error_stage, conditionMessage(e))
+        NULL
+      }
+    )
+  }
+
+  if (!identical(syft_target_mode, "snapshot") && length(dep_files) > 0L) {
+    manifest_files <- .dependency_companion_files(dep_files)
+    target <- tryCatch(
+      .download_repo_files_target(repo_full, sha = sha, files = manifest_files, token = token, temp_root = temp_root),
+      error = function(e) {
+        append_error("download_manifest_files", conditionMessage(e))
+        NULL
+      }
+    )
+    if (!is.null(target)) {
+      scan <- run_scan(target$repo_dir, "manifest_syft_or_osv_scan")
+      if (!is.null(scan) && is.data.frame(scan$components) && nrow(scan$components) > 0L) {
+        scan_source <- "manifest"
+      } else if (!is.null(scan) && identical(syft_target_mode, "manifest")) {
+        scan_source <- "manifest"
+      } else if (identical(syft_target_mode, "manifest_first")) {
+        append_error("manifest_scan_fallback", "Manifest-only Syft scan returned no components or failed; falling back to full repository snapshot.")
+        scan <- NULL
+      }
+
+      if (!isTRUE(keep_snapshots)) {
+        unlink(target$work_dir, recursive = TRUE, force = TRUE)
+      }
+    } else if (identical(syft_target_mode, "manifest_first")) {
+      append_error("manifest_scan_fallback", "No dependency manifest files could be downloaded; falling back to full repository snapshot.")
+    }
+  }
+
+  if (is.null(scan) && !identical(syft_target_mode, "manifest")) {
+    snapshot <- tryCatch(
+      .download_repo_snapshot(repo_full, sha = sha, token = token, temp_root = temp_root),
+      error = function(e) {
+        append_error("download_snapshot", conditionMessage(e))
         NULL
       }
     )
 
-    if (!isTRUE(keep_snapshots)) {
-      unlink(snapshot$work_dir, recursive = TRUE, force = TRUE)
+    if (!is.null(snapshot)) {
+      scan <- run_scan(snapshot$repo_dir, "syft_or_osv_scan")
+      if (!is.null(scan)) {
+        scan_source <- if (identical(syft_target_mode, "manifest_first")) "snapshot_fallback" else "snapshot"
+      }
+
+      if (!isTRUE(keep_snapshots)) {
+        unlink(snapshot$work_dir, recursive = TRUE, force = TRUE)
+      }
     }
   }
 
@@ -1322,7 +1512,15 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     scanned = !is.null(scan),
     dependency_files = paste(dep_files, collapse = ";"),
     vulnerability_count = if (is.null(scan)) NA_integer_ else as.integer(vuln_count),
-    status = if (is.null(scan)) "scan_failed" else .osv_null(job$status_success, "scanned"),
+    status = if (is.null(scan)) {
+      "scan_failed"
+    } else if (identical(scan_source, "manifest")) {
+      "scanned_manifest"
+    } else if (identical(scan_source, "snapshot_fallback")) {
+      "scanned_snapshot_fallback"
+    } else {
+      .osv_null(job$status_success, "scanned")
+    },
     stringsAsFactors = FALSE
   )
 
@@ -1365,6 +1563,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
     osv_db_obj,
     syft_timeout_sec = 0L,
     syft_excludes = NULL,
+    syft_target_mode = "snapshot",
     syft_scan_parallel = FALSE,
     syft_scan_workers = 1L,
     commit_info_parallel = FALSE,
@@ -1570,6 +1769,11 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
       export_fns <- c(
         ".scan_dependency_commit_job",
         ".download_repo_snapshot",
+        ".download_repo_files_target",
+        ".dependency_companion_files",
+        ".github_path_dirname",
+        ".github_path_join",
+        ".github_encode_path",
         "scan_path_with_syft_and_osv",
         "scan_sbom_components_with_osv",
         "parse_cyclonedx_sbom",
@@ -1580,6 +1784,9 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         ".osv_get_mongo_connection",
         ".osv_collapse_values",
         ".osv_reference_urls",
+        ".osv_cvss_rating",
+        ".osv_cvss_v3_base_score",
+        ".osv_extract_cvss",
         ".osv_match_to_df",
         ".osv_resolve_db",
         ".osv_is_package_match",
@@ -1627,7 +1834,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         cl,
         scan_jobs,
         function(job, token, temp_root, keep_snapshots, include_uncertain, syft_resolved,
-                 syft_timeout_sec, syft_excludes) {
+                 syft_timeout_sec, syft_excludes, syft_target_mode) {
           .scan_dependency_commit_job(
             job = job,
             token = token,
@@ -1637,7 +1844,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
             syft_resolved = syft_resolved,
             osv_db_obj = .gitariki_worker_osv_db,
             syft_timeout_sec = syft_timeout_sec,
-            syft_excludes = syft_excludes
+            syft_excludes = syft_excludes,
+            syft_target_mode = syft_target_mode
           )
         },
         token = token,
@@ -1646,7 +1854,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         include_uncertain = include_uncertain,
         syft_resolved = syft_resolved,
         syft_timeout_sec = syft_timeout_sec,
-        syft_excludes = syft_excludes
+        syft_excludes = syft_excludes,
+        syft_target_mode = syft_target_mode
       )
     } else {
       lapply(
@@ -1659,7 +1868,8 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
         syft_resolved = syft_resolved,
         osv_db_obj = osv_db_obj,
         syft_timeout_sec = syft_timeout_sec,
-        syft_excludes = syft_excludes
+        syft_excludes = syft_excludes,
+        syft_target_mode = syft_target_mode
       )
     }
 
@@ -1841,6 +2051,9 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 #' @param syft_scan_parallel If `TRUE`, run Syft scans in parallel within a
 #' repository scan.
 #' @param syft_scan_workers Number of worker processes for parallel Syft scans.
+#' @param syft_target_mode Syft scan target mode: `snapshot` scans the full repository archive,
+#' `manifest` scans only changed dependency files plus companion manifests, and
+#' `manifest_first` tries manifest scanning first and falls back to full snapshots.
 #' @param commit_info_parallel If `TRUE`, fetch commit detail payloads in parallel per repository.
 #' @param commit_info_workers Number of workers for commit-details prefetch.
 #' @param debug If `TRUE`, print stage-by-stage debug messages.
@@ -1869,6 +2082,7 @@ analyze_user_commits_with_syft_osv <- function(
     auto_min_commits_for_commit_parallel = 25L,
     syft_timeout_sec = 0L,
     syft_excludes = NULL,
+    syft_target_mode = c("snapshot", "manifest_first", "manifest"),
     syft_scan_parallel = FALSE,
     syft_scan_workers = 1L,
     commit_info_parallel = FALSE,
@@ -1895,6 +2109,7 @@ analyze_user_commits_with_syft_osv <- function(
   .osv_assert_scalar_numeric_ge(auto_min_repos_for_repo_parallel, "auto_min_repos_for_repo_parallel", min_value = 1)
   .osv_assert_scalar_numeric_ge(auto_min_commits_for_commit_parallel, "auto_min_commits_for_commit_parallel", min_value = 1)
   .osv_assert_scalar_numeric_ge(syft_timeout_sec, "syft_timeout_sec", min_value = 0)
+  syft_target_mode <- match.arg(syft_target_mode)
   .osv_assert_scalar_logical(syft_scan_parallel, "syft_scan_parallel")
   .osv_assert_scalar_numeric_ge(syft_scan_workers, "syft_scan_workers", min_value = 1)
   .osv_assert_scalar_logical(commit_info_parallel, "commit_info_parallel")
@@ -2143,6 +2358,11 @@ analyze_user_commits_with_syft_osv <- function(
       ".gh_repo_commits",
       ".gh_commit_detail_safe",
       ".download_repo_snapshot",
+      ".download_repo_files_target",
+      ".dependency_companion_files",
+      ".github_path_dirname",
+      ".github_path_join",
+      ".github_encode_path",
       "commit_has_dependency_changes",
       ".debug_log",
       ".gitariki_log",
@@ -2171,6 +2391,9 @@ analyze_user_commits_with_syft_osv <- function(
       ".osv_get_mongo_connection",
       ".osv_collapse_values",
       ".osv_reference_urls",
+      ".osv_cvss_rating",
+      ".osv_cvss_v3_base_score",
+      ".osv_extract_cvss",
       ".osv_match_to_df",
       # osv search helpers
       ".osv_resolve_db",
@@ -2255,7 +2478,7 @@ analyze_user_commits_with_syft_osv <- function(
       X = repo_tasks,
       fun = function(task, token, max_commits_per_repo, dependency_patterns, force_scan, temp_root,
                      keep_snapshots, include_uncertain, syft_resolved, syft_timeout_sec, syft_excludes,
-                     syft_scan_parallel, syft_scan_workers,
+                     syft_target_mode, syft_scan_parallel, syft_scan_workers,
                      staged_all_mode, debug, debug_repo_every) {
         repo_full <- task$repo_full
         plan <- task$plan
@@ -2277,6 +2500,7 @@ analyze_user_commits_with_syft_osv <- function(
             osv_db_obj = .gitariki_worker_osv_db,
             syft_timeout_sec = syft_timeout_sec,
             syft_excludes = syft_excludes,
+            syft_target_mode = syft_target_mode,
             syft_scan_parallel = syft_scan_parallel,
             syft_scan_workers = syft_scan_workers,
             commit_info_parallel = FALSE,
@@ -2324,6 +2548,7 @@ analyze_user_commits_with_syft_osv <- function(
       syft_resolved = syft_resolved,
       syft_timeout_sec = as.integer(syft_timeout_sec),
       syft_excludes = syft_excludes,
+      syft_target_mode = syft_target_mode,
       syft_scan_parallel = FALSE,
       syft_scan_workers = 1L,
       staged_all_mode = staged_all_mode,
@@ -2353,6 +2578,7 @@ analyze_user_commits_with_syft_osv <- function(
         osv_db_obj = db_obj,
         syft_timeout_sec = syft_timeout_sec,
         syft_excludes = syft_excludes,
+        syft_target_mode = syft_target_mode,
         syft_scan_parallel = isTRUE(syft_scan_parallel),
         syft_scan_workers = as.integer(syft_scan_workers),
         commit_info_parallel = if (isTRUE(staged_all_mode)) FALSE else commit_info_parallel_effective,
@@ -2369,6 +2595,7 @@ analyze_user_commits_with_syft_osv <- function(
   summary_template <- c("repository", "sha", "date", "message", "commit_author", "scanned", "dependency_files", "vulnerability_count", "status")
   vulnerabilities_template <- c(
     "osv_id", "summary", "details", "published", "modified", "aliases", "references",
+    "cvss_version", "cvss_vector", "cvss_base_score", "cvss_severity",
     "query_purl", "query_version", "matched_purl", "matched_package", "matched_ecosystem",
     "affected", "match_reason", "source_json",
     "component_bom_ref", "component_type", "component_name", "component_version", "component_purl",
@@ -2410,12 +2637,7 @@ analyze_user_commits_with_syft_osv <- function(
     template_cols = vulnerabilities_template,
     key_cols = c("repository", "sha", "osv_id", "component_purl", "query_purl", "matched_purl")
   )
-  errors_df <- .merge_commit_scan_frames(
-    cached_df = cache_state$errors,
-    new_df = errors_new,
-    template_cols = errors_template,
-    key_cols = c("repository", "sha", "stage", "error")
-  )
+  errors_df <- .rbind_data_frames(list(errors_new), template_cols = errors_template)
   lifecycle_df <- .rebuild_lifecycle_from_summary_and_vulnerabilities(
     summary_df = summary_df,
     vulnerabilities_df = vulnerabilities_df

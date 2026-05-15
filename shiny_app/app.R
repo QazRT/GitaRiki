@@ -1,5 +1,3 @@
-library(shiny)
-
 renviron_candidates <- c(
   file.path(getwd(), ".Renviron"),
   file.path(dirname(normalizePath(getwd(), winslash = "/", mustWork = FALSE)), ".Renviron")
@@ -16,6 +14,8 @@ local_libs <- local_lib_candidates[dir.exists(local_lib_candidates)]
 if (length(local_libs) > 0L) {
   .libPaths(unique(c(normalizePath(local_libs, winslash = "/", mustWork = FALSE), .libPaths())))
 }
+
+library(shiny)
 
 source_candidates <- c(
   file.path(getwd(), "account_storage.R"),
@@ -182,7 +182,7 @@ registration_screen <- function() {
       class = "form",
       h2(class = "section-title", "Регистрация"),
       textInput("register_email", "Почта", placeholder = "you@example.com"),
-      passwordInput("register_password", "Пароль", placeholder = "Минимум 6 символов"),
+      passwordInput("register_password", "Пароль", placeholder = "10+ символов: Aa, цифра и спецсимвол"),
       textInput("register_nickname", "Ник", placeholder = "Ваш ник в GitHound"),
       actionButton("submit_registration", "Создать аккаунт", class = "run-button"),
       actionButton("github_login", "Войти через GitHub", class = "menu-button secondary-button github-login-button"),
@@ -281,6 +281,21 @@ protocol_screen <- function(target) {
             ),
             class = "run-button"
           )
+        ),
+        div(
+          class = "protocol-card",
+          img(src = "protocol-maat.png", class = "protocol-image protocol-egypt-image protocol-hell-image", alt = "Маат"),
+          img(src = "protocol-maat-heaven.png", class = "protocol-image protocol-egypt-image protocol-heaven-image", alt = "Маат"),
+          img(src = "protocol-thor.png", class = "protocol-image protocol-norse-image protocol-norse-hell-image", alt = "Тор"),
+          img(src = "protocol-thor-heaven.png", class = "protocol-image protocol-norse-image protocol-norse-heaven-image", alt = "Тор"),
+          actionButton(
+            "run_quality",
+            tagList(
+              span(class = "protocol-label-egypt", "Запуск протокола Маат"),
+              span(class = "protocol-label-norse", "Запуск протокола Тор")
+            ),
+            class = "run-button"
+          )
         )
       ),
       actionButton("go_analysis", "Вернуться на главный экран", class = "menu-button secondary-button")
@@ -329,6 +344,98 @@ set_loading_screen <- function(target, protocol_type = "set") {
   )
 }
 
+set_column_labels <- c(
+  profile = "Профиль",
+  login = "Логин",
+  name = "Имя",
+  company = "Компания",
+  location = "Локация",
+  repository = "Репозиторий",
+  repo = "Репозиторий",
+  repo_name = "Репозиторий",
+  repository_name = "Репозиторий",
+  owner = "Владелец",
+  ownership_type = "Тип репозитория",
+  language = "Язык",
+  url = "Ссылка",
+  source = "Источник",
+  domain = "Домен",
+  status = "Статус",
+  message = "Комментарий",
+  metric = "Показатель",
+  value = "Значение",
+  total_commits = "Всего коммитов",
+  commits = "Коммиты",
+  total_repositories = "Репозитории",
+  repositories = "Репозитории",
+  public_repos = "Публичные репозитории",
+  active_days = "Активных дней",
+  first_commit = "Первый коммит",
+  last_commit = "Последний коммит",
+  avg_commits_per_repo = "Среднее коммитов на репозиторий",
+  avg_commits_per_active_day = "Среднее коммитов в активный день",
+  median_commits_per_day = "Медиана коммитов в день",
+  total_additions = "Добавлено строк",
+  total_deletions = "Удалено строк",
+  total_changes = "Всего изменений",
+  avg_changes_per_commit = "Среднее изменений на коммит",
+  commit_share = "Доля коммитов",
+  activity_type = "Тип активности",
+  activity_value = "Значение активности",
+  bucket_time = "Период",
+  fetched_at = "Дата сбора",
+  created_at = "Создано",
+  updated_at = "Обновлено",
+  account_created_at = "Аккаунт создан",
+  followers = "Подписчики",
+  following = "Подписки",
+  stars = "Звезды",
+  forks = "Форки",
+  total_stars = "Всего звезд",
+  total_forks = "Всего форков",
+  total_repo_stars = "Звезды",
+  total_repo_forks = "Форки",
+  total_repo_size_kb = "Размер, КБ",
+  popularity_index = "Индекс популярности",
+  vulnerability_check = "Проверка уязвимостей",
+  package = "Пакет",
+  package_name = "Пакет",
+  ecosystem = "Экосистема",
+  severity = "Критичность",
+  summary = "Описание",
+  details = "Подробности",
+  aliases = "Алиасы",
+  references = "Ссылки",
+  osv_id = "OSV ID",
+  vuln_id = "ID уязвимости",
+  introduced = "Появилась",
+  fixed = "Исправлена",
+  introduced_at = "Дата появления",
+  fixed_at = "Дата исправления",
+  affected_range = "Затронутый диапазон"
+)
+
+set_pretty_column_name <- function(name) {
+  original <- as.character(name)
+  key <- tolower(gsub("[^[:alnum:]_]+", "_", original))
+  key <- gsub("^_+|_+$", "", key)
+  label <- unname(set_column_labels[[key]])
+  if (!is.null(label) && length(label) == 1L && !is.na(label) && nzchar(label)) {
+    return(label)
+  }
+  if (grepl("[_]", original)) {
+    return(gsub("\\s+", " ", trimws(gsub("_+", " ", original))))
+  }
+  original
+}
+
+set_apply_column_labels <- function(df) {
+  if (is.data.frame(df) && ncol(df) > 0L) {
+    names(df) <- vapply(names(df), set_pretty_column_name, character(1), USE.NAMES = FALSE)
+  }
+  df
+}
+
 set_table_ui <- function(df) {
   if (!is.data.frame(df) || nrow(df) == 0L) {
     return(div(class = "set-empty", "Нет данных для этого раздела."))
@@ -361,6 +468,23 @@ set_table_ui <- function(df) {
     introduced_commits <- df[[5L]]
     df <- df[, -c(5L, 8L), drop = FALSE]
     copy_commit_at_date <- list(date_col = 5L, commits = introduced_commits)
+  }
+  copy_commit_in_repository <- NULL
+  repo_col <- which(names(df) %in% c("Репозиторий", "Repository", "Р РµРїРѕР·РёС‚РѕСЂРёР№"))
+  vuln_commit_col <- which(names(df) %in% c("Коммит", "Commit", "РљРѕРјРјРёС‚"))
+  is_found_vulnerability_table <- length(repo_col) > 0L &&
+    length(vuln_commit_col) > 0L &&
+    "Vuln ID" %in% names(df) &&
+    "EPSS" %in% names(df)
+  if (isTRUE(is_found_vulnerability_table)) {
+    commit_col <- vuln_commit_col[[1L]]
+    repo_col_i <- repo_col[[1L]]
+    vulnerability_commits <- as.character(df[[commit_col]])
+    df <- df[, -commit_col, drop = FALSE]
+    if (commit_col < repo_col_i) {
+      repo_col_i <- repo_col_i - 1L
+    }
+    copy_commit_in_repository <- list(repo_col = repo_col_i, commits = vulnerability_commits)
   }
   copy_commit_mappings <- if (is.list(copy_commit_at_date) && !is.null(copy_commit_at_date$mappings)) {
     copy_commit_at_date$mappings
@@ -414,19 +538,93 @@ set_table_ui <- function(df) {
       ))
     }
   }
+  if (length(full_text_mappings) == 0L) {
+    fallback_description_col <- which(names(df) %in% c("\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", "Description"))
+    if (length(fallback_description_col) == 0L) {
+      fallback_description_col <- grep("descr|\\u041e\\u043f\\u0438\\u0441", names(df), ignore.case = TRUE)
+    }
+    if (length(fallback_description_col) > 0L && "Vuln ID" %in% names(df)) {
+      fallback_description_col <- fallback_description_col[[1L]]
+      full_values <- list(
+        summary = if (!is.na(full_summary_col)) as.character(df[[full_summary_col]]) else as.character(df[[fallback_description_col]]),
+        details = if (!is.na(full_details_col)) as.character(df[[full_details_col]]) else rep("", nrow(df)),
+        aliases = if (!is.na(full_aliases_col)) as.character(df[[full_aliases_col]]) else rep("", nrow(df)),
+        references = if (!is.na(full_references_col)) as.character(df[[full_references_col]]) else rep("", nrow(df))
+      )
+      if (length(hidden_full_cols) > 0L) {
+        df <- df[, -hidden_full_cols, drop = FALSE]
+        fallback_description_col <- which(names(df) %in% c("\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", "Description"))
+        if (length(fallback_description_col) == 0L) {
+          fallback_description_col <- grep("descr|\\u041e\\u043f\\u0438\\u0441", names(df), ignore.case = TRUE)
+        }
+      }
+      if (length(fallback_description_col) > 0L) {
+        title_col <- which(names(df) %in% c("Vuln ID", "OSV ID"))
+        full_text_mappings <- list(list(
+          text_col = fallback_description_col[[1L]],
+          values = full_values$summary,
+          details = full_values$details,
+          aliases = full_values$aliases,
+          references = full_values$references,
+          title_col = if (length(title_col) > 0L) title_col[[1L]] else NA_integer_
+        ))
+      }
+    }
+  }
   full_text_mapping_for_col <- function(col_index) {
     matches <- Filter(function(mapping) {
       identical(as.integer(col_index), as.integer(mapping[["text_col"]]))
     }, full_text_mappings)
     if (length(matches) > 0L) matches[[1L]] else NULL
   }
+  df <- set_apply_column_labels(df)
+  epss_cve_col <- which(names(df) %in% c("EPSS CVE", "epss_cve"))
+  epss_cves <- if (length(epss_cve_col) > 0L) {
+    as.character(df[[epss_cve_col[[1L]]]])
+  } else {
+    rep("", nrow(df))
+  }
+  if (length(epss_cve_col) > 0L) {
+    removed_col <- epss_cve_col[[1L]]
+    df <- df[, -removed_col, drop = FALSE]
+    full_text_mappings <- lapply(full_text_mappings, function(mapping) {
+      if (is.list(mapping) && !is.null(mapping[["text_col"]]) && mapping[["text_col"]] > removed_col) {
+        mapping[["text_col"]] <- mapping[["text_col"]] - 1L
+      }
+      if (is.list(mapping) && !is.null(mapping[["title_col"]]) && !is.na(mapping[["title_col"]]) && mapping[["title_col"]] > removed_col) {
+        mapping[["title_col"]] <- mapping[["title_col"]] - 1L
+      }
+      mapping
+    })
+  }
   df <- utils::head(df, 12L)
+  epss_cves <- utils::head(epss_cves, nrow(df))
+  if (is.list(copy_commit_in_repository) && !is.null(copy_commit_in_repository$commits)) {
+    copy_commit_in_repository$commits <- utils::head(copy_commit_in_repository$commits, nrow(df))
+  }
   return(div(
     class = "set-report-table-wrap",
     tags$table(
-      class = "set-report-table",
+      class = "set-report-table set-sortable-table",
       tags$thead(
-        tags$tr(lapply(names(df), function(name) tags$th(name)))
+        tags$tr(lapply(names(df), function(name) {
+          if (identical(name, "EPSS")) {
+            tags$th(
+              div(
+                class = "epss-header-cell",
+                span(name),
+                tags$button(
+                  type = "button",
+                  class = "epss-fetch-all-button",
+                  title = "Запросить EPSS для всех строк",
+                  HTML("&#128065;")
+                )
+              )
+            )
+          } else {
+            tags$th(name)
+          }
+        }))
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
@@ -435,6 +633,46 @@ set_table_ui <- function(df) {
             display_value <- value
             if (is.na(display_value) || !nzchar(display_value)) {
               display_value <- "\u2014"
+            }
+            if (is.list(copy_commit_in_repository) &&
+                identical(j, copy_commit_in_repository$repo_col) &&
+                !is.null(copy_commit_in_repository$commits) &&
+                length(copy_commit_in_repository$commits) >= i) {
+              commit <- as.character(copy_commit_in_repository$commits[[i]])
+              can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
+              if (isTRUE(can_copy)) {
+                return(tags$td(
+                  div(
+                    class = "commit-date-cell",
+                    span(display_value),
+                    tags$button(
+                      type = "button",
+                      class = "copy-commit-button",
+                      `data-commit` = commit,
+                      title = commit,
+                      "SHA"
+                    )
+                  )
+                ))
+              }
+            }
+            if (identical(names(df)[[j]], "EPSS")) {
+              cve <- if (length(epss_cves) >= i) as.character(epss_cves[[i]]) else ""
+              if (!is.na(cve) && nzchar(cve)) {
+                return(tags$td(
+                  div(
+                    class = "epss-cell",
+                    span(class = "epss-value", "\u2014"),
+                    tags$button(
+                      type = "button",
+                      class = "epss-fetch-button",
+                      `data-cve` = cve,
+                      title = paste("Fetch EPSS for", cve),
+                      "EPSS"
+                    )
+                  )
+                ))
+              }
             }
             commit_mapping <- commit_mapping_for_col(j)
             if (is.list(commit_mapping)) {
@@ -450,6 +688,7 @@ set_table_ui <- function(df) {
               can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
               if (isTRUE(can_copy)) {
                 return(tags$td(
+                  `data-sort` = value,
                   div(
                     class = "commit-date-cell",
                     span(display_value),
@@ -495,6 +734,7 @@ set_table_ui <- function(df) {
               has_full_text <- any(nzchar(trimws(c(full_summary, full_details, full_aliases, full_references))), na.rm = TRUE)
               if (isTRUE(has_full_text)) {
                 return(tags$td(
+                  `data-sort` = value,
                   div(
                     class = "description-cell",
                     span(display_value),
@@ -513,7 +753,7 @@ set_table_ui <- function(df) {
                 ))
               }
             }
-            tags$td(display_value)
+            tags$td(`data-sort` = value, display_value)
           }))
         })
       )
@@ -650,17 +890,46 @@ report_theme_value <- function(report, fallback = "hell") {
   theme
 }
 
+report_mythology_value <- function(report, fallback = "egypt") {
+  mythology <- report$mythology_style %||% report$launch_mythology %||% fallback
+  mythology <- tolower(trimws(as.character(mythology)))
+  if (!mythology %in% c("egypt", "norse", "greece")) {
+    mythology <- fallback
+  }
+  mythology
+}
+
 set_title_page <- function(report) {
   theme <- report$view_theme %||% report_theme_value(report, fallback = "hell")
   if (!theme %in% c("hell", "heaven")) {
     theme <- "hell"
   }
   is_heaven <- identical(theme, "heaven")
+  mythology <- report_mythology_value(report, fallback = "egypt")
+  is_norse <- identical(mythology, "norse")
   world <- if (is_heaven) "божественного мира" else "загробного мира"
   oath <- if (is_heaven) {
     "Свидетельство собрано под светом небесного суда: факты отделены от догадок, а следы цели сохранены в порядке."
   } else {
     "Свидетельство собрано у врат нижнего суда: факты отделены от догадок, а следы цели сохранены в порядке."
+  }
+  logo_src <- if (is_norse) {
+    if (is_heaven) "githound-norse-heaven-logo.png" else "githound-norse-logo.png"
+  } else {
+    if (is_heaven) "githound-heaven-logo.png" else "githound-hell-logo.png"
+  }
+  seals <- if (is_norse) {
+    list(
+      list(file = if (is_heaven) "seal-odin-heaven.png" else "seal-odin.png", name = "Один", note = "печать мудрого толкования"),
+      list(file = if (is_heaven) "seal-tyr-heaven.png" else "seal-tyr.png", name = "Тюр", note = "печать точного разбора"),
+      list(file = if (is_heaven) "seal-heimdall-heaven.png" else "seal-heimdall.png", name = "Хеймдалль", note = "печать зорких следов")
+    )
+  } else {
+    list(
+      list(file = "seal-isis.png", name = "Исида", note = "печать ясного толкования"),
+      list(file = "seal-set.png", name = "Сет", note = "печать сухого протокола"),
+      list(file = "seal-anubis.png", name = "Анубис", note = "печать взвешенных следов")
+    )
   }
 
   div(
@@ -668,7 +937,7 @@ set_title_page <- function(report) {
     div(
       class = "set-title-brand",
       img(
-        src = if (is_heaven) "githound-heaven-logo.png" else "githound-hell-logo.png",
+        src = logo_src,
         class = "set-title-logo",
         alt = "GitHound"
       ),
@@ -679,9 +948,14 @@ set_title_page <- function(report) {
     p(class = "set-title-oath", oath),
     div(
       class = "divine-seals",
-      div(class = "divine-seal seal-isis", img(src = "seal-isis.png", class = "divine-seal-image", alt = "Печать Исиды"), span("Исида"), tags$small("печать ясного толкования")),
-      div(class = "divine-seal seal-set", img(src = "seal-set.png", class = "divine-seal-image", alt = "Печать Сета"), span("Сет"), tags$small("печать сухого протокола")),
-      div(class = "divine-seal seal-anubis", img(src = "seal-anubis.png", class = "divine-seal-image", alt = "Печать Анубиса"), span("Анубис"), tags$small("печать взвешенных следов"))
+      lapply(seals, function(seal) {
+        div(
+          class = "divine-seal",
+          img(src = seal$file, class = "divine-seal-image", alt = paste("Печать", seal$name)),
+          span(seal$name),
+          tags$small(seal$note)
+        )
+      })
     ),
     div(class = "set-title-date", paste("Собран:", report$generated_at %||% ""))
   )
@@ -938,6 +1212,7 @@ pdf_prepare_table <- function(df) {
   if (!is.data.frame(df) || nrow(df) == 0L || ncol(df) == 0L) {
     return(NULL)
   }
+  df <- set_apply_column_labels(df)
   df <- df[, seq_len(min(ncol(df), 4L)), drop = FALSE]
   as.data.frame(lapply(df, function(col) {
     value <- as.character(col)
@@ -1038,13 +1313,29 @@ pdf_draw_title_page <- function(report, record, theme_mode = "hell") {
   theme <- pdf_theme(theme_mode)
   pdf_new_page(theme)
   is_heaven <- identical(theme_mode, "heaven")
+  mythology <- report_mythology_value(report, fallback = record$mythology_style %||% "egypt")
+  is_norse <- identical(mythology, "norse")
   world_title <- if (is_heaven) "ОТЧЕТ БОЖЕСТВЕННОГО\nМИРА" else "ОТЧЕТ ЗАГРОБНОГО\nМИРА"
   oath <- if (is_heaven) {
     "Свидетельство собрано под светом небесного суда: факты отделены от догадок, а следы цели сохранены в порядке."
   } else {
     "Свидетельство собрано у врат нижнего суда: факты отделены от догадок, а следы цели сохранены в порядке."
   }
-  logo_file <- if (is_heaven) pdf_asset_path("githound-heaven-logo.png") else pdf_asset_path("githound-hell-logo.png")
+  logo_file <- if (is_norse) {
+    if (is_heaven) pdf_asset_path("githound-norse-heaven-logo.png") else pdf_asset_path("githound-norse-logo.png")
+  } else {
+    if (is_heaven) pdf_asset_path("githound-heaven-logo.png") else pdf_asset_path("githound-hell-logo.png")
+  }
+  seal_files <- if (is_norse) {
+    c(
+      if (is_heaven) "seal-odin-heaven.png" else "seal-odin.png",
+      if (is_heaven) "seal-tyr-heaven.png" else "seal-tyr.png",
+      if (is_heaven) "seal-heimdall-heaven.png" else "seal-heimdall.png"
+    )
+  } else {
+    c("seal-isis.png", "seal-set.png", "seal-anubis.png")
+  }
+  seal_names <- if (is_norse) c("Один", "Тюр", "Хеймдалль") else c("Исида", "Сет", "Анубис")
   pdf_draw_raster(logo_file, 0.36, 0.78, 0.64, 0.98)
   graphics::text(0.5, 0.73, "GITHOUND", adj = c(0.5, 0.5), cex = 2.1, font = 2, col = if (is_heaven) "#d31d1d" else theme$ink)
   graphics::text(0.5, 0.58, world_title, adj = c(0.5, 0.5), cex = 2.55, font = 2, col = theme$ink)
@@ -1057,12 +1348,12 @@ pdf_draw_title_page <- function(report, record, theme_mode = "hell") {
   }
   seal_y0 <- 0.065
   seal_y1 <- 0.255
-  pdf_draw_raster(pdf_asset_path("seal-isis.png"), 0.11, seal_y0, 0.33, seal_y1)
-  pdf_draw_raster(pdf_asset_path("seal-set.png"), 0.39, seal_y0, 0.61, seal_y1)
-  pdf_draw_raster(pdf_asset_path("seal-anubis.png"), 0.67, seal_y0, 0.89, seal_y1)
-  graphics::text(0.22, 0.055, "Исида", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
-  graphics::text(0.50, 0.055, "Сет", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
-  graphics::text(0.78, 0.055, "Анубис", adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  pdf_draw_raster(pdf_asset_path(seal_files[[1]]), 0.11, seal_y0, 0.33, seal_y1)
+  pdf_draw_raster(pdf_asset_path(seal_files[[2]]), 0.39, seal_y0, 0.61, seal_y1)
+  pdf_draw_raster(pdf_asset_path(seal_files[[3]]), 0.67, seal_y0, 0.89, seal_y1)
+  graphics::text(0.22, 0.055, seal_names[[1]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.50, 0.055, seal_names[[2]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
+  graphics::text(0.78, 0.055, seal_names[[3]], adj = c(0.5, 0.5), cex = 1.02, font = 2, col = theme$ink)
 }
 
 pdf_draw_plot_page <- function(path, label, theme) {
@@ -1437,6 +1728,73 @@ ui <- fluidPage(
         });
       });
 
+      function fetchEpssButton(button) {
+        var cve = String(button.attr('data-cve') || '').trim().toUpperCase();
+        var cell = button.closest('.epss-cell');
+        var value = cell.find('.epss-value');
+        if (!cve || button.prop('disabled')) return Promise.resolve(false);
+
+        button.prop('disabled', true).text('...');
+        return fetch('https://api.first.org/data/v1/epss?cve=' + encodeURIComponent(cve), {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        })
+          .then(function(response) {
+            if (!response.ok) throw new Error('EPSS HTTP ' + response.status);
+            return response.json();
+          })
+          .then(function(payload) {
+            var row = payload && payload.data && payload.data.length ? payload.data[0] : null;
+            if (!row || row.epss === undefined || row.epss === null) {
+              value.text('нет данных');
+              return;
+            }
+            var epss = Number(row.epss);
+            var percentile = Number(row.percentile);
+            var text = isFinite(epss) ? (epss * 100).toFixed(2) + '%' : String(row.epss);
+            value.empty().append(document.createTextNode(text));
+            if (isFinite(percentile)) {
+              value.append($('<span/>', {
+                class: 'epss-percentile',
+                text: 'Perc: ' + (percentile * 100).toFixed(1) + '%'
+              }));
+            }
+            button.hide();
+          })
+          .catch(function(error) {
+            value.text('ошибка');
+            button.attr('title', error.message || 'EPSS request failed');
+          })
+          .finally(function() {
+            if (button.is(':visible')) {
+              button.prop('disabled', false).text('EPSS');
+            }
+          });
+      }
+
+      $(document).on('click', '.epss-fetch-button', function() {
+        fetchEpssButton($(this));
+      });
+
+      $(document).on('click', '.epss-fetch-all-button', function() {
+        var allButton = $(this);
+        if (allButton.prop('disabled')) return;
+        var table = allButton.closest('table');
+        var buttons = table.find('tbody .epss-fetch-button:visible').toArray();
+        if (!buttons.length) return;
+
+        allButton.prop('disabled', true).text('...');
+        var chain = Promise.resolve();
+        buttons.forEach(function(btn) {
+          chain = chain.then(function() {
+            return fetchEpssButton($(btn));
+          });
+        });
+        chain.finally(function() {
+          allButton.prop('disabled', false).text(String.fromCodePoint(128065));
+        });
+      });
+
       $(document).on('click', '.full-text-button', function() {
         if (!window.Shiny) return;
         var button = $(this);
@@ -1448,6 +1806,57 @@ ui <- fluidPage(
           references: String(button.attr('data-full-references') || ''),
           nonce: Date.now()
         }, {priority: 'event'});
+      });
+
+      function sortableCellValue(row, index) {
+        var cell = row.children[index];
+        if (!cell) return '';
+        var raw = cell.getAttribute('data-sort');
+        if (raw === null || raw === undefined) raw = cell.textContent || '';
+        return String(raw).trim();
+      }
+
+      function compareSortableValues(a, b) {
+        var emptyA = !a || a === '—';
+        var emptyB = !b || b === '—';
+        if (emptyA && emptyB) return 0;
+        if (emptyA) return 1;
+        if (emptyB) return -1;
+        var normalizedA = a.replace(',', '.').replace(/\\s+/g, '');
+        var normalizedB = b.replace(',', '.').replace(/\\s+/g, '');
+        var numberA = Number(normalizedA);
+        var numberB = Number(normalizedB);
+        if (!Number.isNaN(numberA) && !Number.isNaN(numberB)) {
+          return numberA - numberB;
+        }
+        var dateA = Date.parse(a);
+        var dateB = Date.parse(b);
+        if (!Number.isNaN(dateA) && !Number.isNaN(dateB)) {
+          return dateA - dateB;
+        }
+        return a.localeCompare(b, 'ru', {numeric: true, sensitivity: 'base'});
+      }
+
+      $(document).on('click', '.set-sortable-table th', function() {
+        var header = $(this);
+        var table = header.closest('table')[0];
+        if (!table || !table.tBodies.length) return;
+        var index = Number(header.attr('data-sort-index')) - 1;
+        if (Number.isNaN(index) || index < 0) return;
+        var current = header.attr('data-sort-dir') || 'none';
+        var direction = current === 'asc' ? 'desc' : 'asc';
+        var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+        rows.sort(function(rowA, rowB) {
+          var result = compareSortableValues(sortableCellValue(rowA, index), sortableCellValue(rowB, index));
+          return direction === 'asc' ? result : -result;
+        });
+        rows.forEach(function(row) {
+          table.tBodies[0].appendChild(row);
+        });
+        $(table).find('th').removeAttr('data-sort-dir').removeClass('sorted-asc sorted-desc')
+          .find('.set-sort-indicator').text('↕');
+        header.attr('data-sort-dir', direction).addClass(direction === 'asc' ? 'sorted-asc' : 'sorted-desc')
+          .find('.set-sort-indicator').text(direction === 'asc' ? '↑' : '↓');
       });
 
       $(document).on('click', '#theme_hell', function() {
@@ -2996,6 +3405,72 @@ ui <- fluidPage(
         white-space: normal;
       }
 
+      .set-sort-button {
+        display: inline-flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 6px;
+        width: 100%;
+        min-height: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        line-height: 1.25;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .set-sort-button:hover,
+      .set-sort-button:focus {
+        color: var(--accent-hover);
+        outline: none;
+      }
+
+      .set-sort-indicator {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .set-report-table th.sorted-asc,
+      .set-report-table th.sorted-desc {
+        background: rgba(224, 24, 36, 0.12);
+      .epss-header-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .epss-fetch-all-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .epss-fetch-all-button:hover,
+      .epss-fetch-all-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .epss-fetch-all-button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
       .set-markdown table {
         width: 100%;
         margin: 10px 0;
@@ -3067,6 +3542,53 @@ ui <- fluidPage(
 
       body.heaven-theme .copy-commit-button {
         background: rgba(211, 29, 29, 0.07);
+      }
+
+      .epss-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 118px;
+      }
+
+      .epss-value {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .epss-percentile {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .epss-fetch-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 48px;
+        height: 24px;
+        padding: 0 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--accent);
+        background: rgba(224, 24, 36, 0.08);
+        font-size: 12px;
+        font-weight: 900;
+        cursor: pointer;
+      }
+
+      .epss-fetch-button:hover,
+      .epss-fetch-button:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(224, 24, 36, 0.12);
+      }
+
+      .epss-fetch-button:disabled {
+        cursor: wait;
+        opacity: 0.65;
       }
 
       .full-text-button {
@@ -3962,7 +4484,8 @@ server <- function(input, output, session) {
     avatar_id = "egypt_1",
     github_token = "",
     github_token_name = "",
-    github_token_expires_at = NA_character_
+    github_token_expires_at = NA_character_,
+    mythology_style = "egypt"
   )
   parse_github_token_expires_at <- function(value) {
     value <- value %||% NA_character_
@@ -4000,6 +4523,16 @@ server <- function(input, output, session) {
     } else {
       NA_character_
     }
+    style <- if ("mythology_style" %in% names(row)) row$mythology_style[[1]] %||% "egypt" else "egypt"
+    style <- tolower(trimws(as.character(style)))
+    if (!style %in% c("egypt", "norse", "greece")) {
+      style <- "egypt"
+    }
+    if (identical(style, "greece")) {
+      style <- "egypt"
+    }
+    account$mythology_style <- style
+    mythology_style(style)
     invisible(TRUE)
   }
   github_rate_limit <- reactiveVal(list(
@@ -4016,7 +4549,10 @@ server <- function(input, output, session) {
     token <- trimws(as.character(token %||% ""))
     headers <- c(
       Accept = "application/vnd.github+json",
-      `User-Agent` = "GitHound-Shiny"
+      `User-Agent` = "GitHound-Shiny",
+      `X-GitHub-Api-Version` = "2022-11-28",
+      `Cache-Control` = "no-cache",
+      Pragma = "no-cache"
     )
     if (nzchar(token)) {
       headers <- c(headers, Authorization = paste("Bearer", token))
@@ -4034,15 +4570,29 @@ server <- function(input, output, session) {
 
     payload <- jsonlite::fromJSON(text, simplifyVector = FALSE)
     core <- payload$resources$core %||% payload$rate %||% list()
-    remaining <- suppressWarnings(as.integer(core$remaining %||% NA_integer_))
-    limit <- suppressWarnings(as.integer(core$limit %||% NA_integer_))
-    reset <- suppressWarnings(as.numeric(core$reset %||% NA_real_))
+    response_headers <- httr::headers(response)
+    header_value <- function(name) {
+      value <- response_headers[[name]] %||% response_headers[[tolower(name)]]
+      if (is.null(value) || length(value) == 0L) NA_character_ else as.character(value[[1L]])
+    }
+    header_int <- function(name) suppressWarnings(as.integer(header_value(name)))
+    header_num <- function(name) suppressWarnings(as.numeric(header_value(name)))
+
+    remaining <- suppressWarnings(as.integer(core$remaining %||% header_int("x-ratelimit-remaining")))
+    limit <- suppressWarnings(as.integer(core$limit %||% header_int("x-ratelimit-limit")))
+    reset <- suppressWarnings(as.numeric(core$reset %||% header_num("x-ratelimit-reset")))
+    resource <- header_value("x-ratelimit-resource")
+    if (is.na(resource) || !nzchar(trimws(resource))) {
+      resource <- "core"
+    }
 
     list(
       status = "ok",
       remaining = remaining,
       limit = limit,
       reset = reset,
+      used = suppressWarnings(as.integer(core$used %||% header_int("x-ratelimit-used"))),
+      resource = as.character(resource),
       updated_at = Sys.time(),
       source = if (nzchar(token)) "account" else "anonymous",
       error = NULL
@@ -4053,6 +4603,24 @@ server <- function(input, output, session) {
   protocol_worker <- reactiveVal(NULL)
   protocol_job_dir <- file.path(tempdir(), "githound_protocol_jobs")
   dir.create(protocol_job_dir, recursive = TRUE, showWarnings = FALSE)
+
+  normalize_mythology_style <- function(value) {
+    value <- tolower(trimws(as.character(value %||% "egypt")))
+    if (!value %in% c("egypt", "norse", "greece")) {
+      value <- "egypt"
+    }
+    value
+  }
+
+  apply_account_mythology_style <- function(value) {
+    value <- normalize_mythology_style(value)
+    if (identical(value, "greece")) {
+      value <- "egypt"
+    }
+    account$mythology_style <- value
+    mythology_style(value)
+    invisible(value)
+  }
 
   protocol_new_job_id <- function() {
     paste0(
@@ -4088,9 +4656,8 @@ server <- function(input, output, session) {
       !isTRUE(github_oauth_processed())
   }
 
-  observe({
-    token <- account_github_token()
-    invalidateLater(60000, session)
+  refresh_github_rate_limit <- function() {
+    token <- isolate(account_github_token())
     github_rate_limit(tryCatch(
       fetch_github_rate_limit(token),
       error = function(e) list(
@@ -4103,6 +4670,12 @@ server <- function(input, output, session) {
         error = conditionMessage(e)
       )
     ))
+  }
+
+  observe({
+    active_job <- protocol_active_job()
+    invalidateLater(if (is.null(active_job)) 60000 else 10000, session)
+    refresh_github_rate_limit()
   })
 
   protocol_write_progress <- function(path, value = 0, label = NULL) {
@@ -4137,6 +4710,7 @@ server <- function(input, output, session) {
     protocol_active_job(NULL)
     protocol_worker(NULL)
     try(unlink(c(job$progress_path, job$input_path)), silent = TRUE)
+    refresh_github_rate_limit()
 
     if (is.list(result) && isTRUE(result$ok)) {
       job$on_success(result$result)
@@ -4250,6 +4824,7 @@ server <- function(input, output, session) {
     set_report(NULL)
     active_protocol(protocol_type)
     launch_theme <- theme_mode()
+    launch_mythology <- mythology_style()
     load_user_archive()
     archive_same_target(target, protocol_type)
     current_page("set_loading")
@@ -4280,6 +4855,8 @@ server <- function(input, output, session) {
           report <- result$report
           report$theme <- launch_theme
           report$view_theme <- launch_theme
+          report$mythology_style <- launch_mythology
+          report$view_mythology <- launch_mythology
           set_report(report)
           add_report_to_archive(report, target)
           current_page("set_report")
@@ -4320,6 +4897,8 @@ server <- function(input, output, session) {
           report <- result$report
           report$theme <- launch_theme
           report$view_theme <- launch_theme
+          report$mythology_style <- launch_mythology
+          report$view_mythology <- launch_mythology
           set_report(report)
           add_report_to_archive(report, target)
           current_page("set_report")
@@ -4359,6 +4938,8 @@ server <- function(input, output, session) {
         report <- result$report
         report$theme <- launch_theme
         report$view_theme <- launch_theme
+        report$mythology_style <- launch_mythology
+        report$view_mythology <- launch_mythology
         set_report(report)
         add_report_to_archive(report, target)
         current_page("set_report")
@@ -4630,6 +5211,7 @@ server <- function(input, output, session) {
     account$github_token <- ""
     account$github_token_name <- ""
     account$github_token_expires_at <- NA_character_
+    apply_account_mythology_style("egypt")
     remember_token(NULL)
     remember_attempted(TRUE)
     report_archive(list())
@@ -4835,11 +5417,17 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$style_egypt, {
-    mythology_style("egypt")
+    apply_account_mythology_style("egypt")
+    if (nzchar(account$email %||% "")) {
+      try(update_githound_account_mythology_style(conn, account$email, "egypt"), silent = TRUE)
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$style_norse, {
-    mythology_style("norse")
+    apply_account_mythology_style("norse")
+    if (nzchar(account$email %||% "")) {
+      try(update_githound_account_mythology_style(conn, account$email, "norse"), silent = TRUE)
+    }
   }, ignoreInit = TRUE)
 
   observeEvent(input$style_greece, {
@@ -5150,10 +5738,16 @@ server <- function(input, output, session) {
       "загрузка /rate_limit"
     }
     source_label <- if (identical(rate$source, "account")) "токен аккаунта" else "анонимно"
+    resource_label <- trimws(as.character(rate$resource %||% "core"))
+    if (!nzchar(resource_label) || is.na(resource_label)) {
+      resource_label <- "core"
+    }
+    updated_at <- rate$updated_at %||% Sys.time()
+    updated_label <- format(as.POSIXct(updated_at, tz = display_tz), "%H:%M:%S")
     title <- if (identical(rate$status, "error") && nzchar(rate$error %||% "")) {
       rate$error
     } else {
-      paste("GitHub /rate_limit:", source_label)
+      paste("GitHub /rate_limit:", source_label, "resource", resource_label, "updated", updated_label)
     }
 
     div(
