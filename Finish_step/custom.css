@@ -1,5 +1,6 @@
 /* GitHound reveal.js custom theme for Quarto.
    Based on the Step3 presentation theme, with extra components for fStep.qmd. */
+
 :root {
   --gh-bg: #120207;
   --gh-bg-2: #21050b;
@@ -655,4 +656,43 @@
   padding: 14px 18px;
   font-size: 0.76em;
   margin-top: 12px;
+}
+
+
+/* Hide scrollbars throughout the Reveal/Quarto presentation. */
+html,
+body,
+.reveal,
+.reveal-viewport,
+.reveal .slides,
+.reveal .slides section,
+.reveal .slide,
+.reveal .slide.scrollable,
+.reveal .columns,
+.reveal .columns > .column,
+.reveal div.sourceCode,
+.reveal pre,
+.reveal pre code,
+.reveal table,
+.reveal .footnotes,
+.reveal .mermaid,
+.reveal .mermaid svg {
+  overflow: hidden !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*,
+*::before,
+*::after {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar,
+*::before::-webkit-scrollbar,
+*::after::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
 }
