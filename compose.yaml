@@ -1,0 +1,10 @@
+services:
+  gitariki:
+    build: .
+    env_file:
+      - .Renviron
+    ports:
+      - 3838:3838
+    container_name: gitariki
+    image: gitariki
+networks: {}
