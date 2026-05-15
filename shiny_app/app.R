@@ -260,7 +260,8 @@ protocol_screen <- function(target) {
         ),
         div(
           class = "protocol-card",
-          img(src = "seal-anubis.png", class = "protocol-image", alt = "Маат"),
+          img(src = "protocol-maat.png", class = "protocol-image protocol-hell-image", alt = "Маат"),
+          img(src = "protocol-maat-heaven.png", class = "protocol-image protocol-heaven-image", alt = "Маат"),
           actionButton("run_quality", "Запуск протокола Маат", class = "run-button")
         )
       ),
