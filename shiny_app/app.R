@@ -1,5 +1,3 @@
-library(shiny)
-
 renviron_candidates <- c(
   file.path(getwd(), ".Renviron"),
   file.path(dirname(normalizePath(getwd(), winslash = "/", mustWork = FALSE)), ".Renviron")
@@ -16,6 +14,8 @@ local_libs <- local_lib_candidates[dir.exists(local_lib_candidates)]
 if (length(local_libs) > 0L) {
   .libPaths(unique(c(normalizePath(local_libs, winslash = "/", mustWork = FALSE), .libPaths())))
 }
+
+library(shiny)
 
 source_candidates <- c(
   file.path(getwd(), "account_storage.R"),
@@ -329,6 +329,98 @@ set_loading_screen <- function(target, protocol_type = "set") {
   )
 }
 
+set_column_labels <- c(
+  profile = "Профиль",
+  login = "Логин",
+  name = "Имя",
+  company = "Компания",
+  location = "Локация",
+  repository = "Репозиторий",
+  repo = "Репозиторий",
+  repo_name = "Репозиторий",
+  repository_name = "Репозиторий",
+  owner = "Владелец",
+  ownership_type = "Тип репозитория",
+  language = "Язык",
+  url = "Ссылка",
+  source = "Источник",
+  domain = "Домен",
+  status = "Статус",
+  message = "Комментарий",
+  metric = "Показатель",
+  value = "Значение",
+  total_commits = "Всего коммитов",
+  commits = "Коммиты",
+  total_repositories = "Репозитории",
+  repositories = "Репозитории",
+  public_repos = "Публичные репозитории",
+  active_days = "Активных дней",
+  first_commit = "Первый коммит",
+  last_commit = "Последний коммит",
+  avg_commits_per_repo = "Среднее коммитов на репозиторий",
+  avg_commits_per_active_day = "Среднее коммитов в активный день",
+  median_commits_per_day = "Медиана коммитов в день",
+  total_additions = "Добавлено строк",
+  total_deletions = "Удалено строк",
+  total_changes = "Всего изменений",
+  avg_changes_per_commit = "Среднее изменений на коммит",
+  commit_share = "Доля коммитов",
+  activity_type = "Тип активности",
+  activity_value = "Значение активности",
+  bucket_time = "Период",
+  fetched_at = "Дата сбора",
+  created_at = "Создано",
+  updated_at = "Обновлено",
+  account_created_at = "Аккаунт создан",
+  followers = "Подписчики",
+  following = "Подписки",
+  stars = "Звезды",
+  forks = "Форки",
+  total_stars = "Всего звезд",
+  total_forks = "Всего форков",
+  total_repo_stars = "Звезды",
+  total_repo_forks = "Форки",
+  total_repo_size_kb = "Размер, КБ",
+  popularity_index = "Индекс популярности",
+  vulnerability_check = "Проверка уязвимостей",
+  package = "Пакет",
+  package_name = "Пакет",
+  ecosystem = "Экосистема",
+  severity = "Критичность",
+  summary = "Описание",
+  details = "Подробности",
+  aliases = "Алиасы",
+  references = "Ссылки",
+  osv_id = "OSV ID",
+  vuln_id = "ID уязвимости",
+  introduced = "Появилась",
+  fixed = "Исправлена",
+  introduced_at = "Дата появления",
+  fixed_at = "Дата исправления",
+  affected_range = "Затронутый диапазон"
+)
+
+set_pretty_column_name <- function(name) {
+  original <- as.character(name)
+  key <- tolower(gsub("[^[:alnum:]_]+", "_", original))
+  key <- gsub("^_+|_+$", "", key)
+  label <- unname(set_column_labels[[key]])
+  if (!is.null(label) && length(label) == 1L && !is.na(label) && nzchar(label)) {
+    return(label)
+  }
+  if (grepl("[_]", original)) {
+    return(gsub("\\s+", " ", trimws(gsub("_+", " ", original))))
+  }
+  original
+}
+
+set_apply_column_labels <- function(df) {
+  if (is.data.frame(df) && ncol(df) > 0L) {
+    names(df) <- vapply(names(df), set_pretty_column_name, character(1), USE.NAMES = FALSE)
+  }
+  df
+}
+
 set_table_ui <- function(df) {
   if (!is.data.frame(df) || nrow(df) == 0L) {
     return(div(class = "set-empty", "Нет данных для этого раздела."))
@@ -420,13 +512,20 @@ set_table_ui <- function(df) {
     }, full_text_mappings)
     if (length(matches) > 0L) matches[[1L]] else NULL
   }
+  df <- set_apply_column_labels(df)
   df <- utils::head(df, 12L)
   return(div(
     class = "set-report-table-wrap",
     tags$table(
-      class = "set-report-table",
+      class = "set-report-table set-sortable-table",
       tags$thead(
-        tags$tr(lapply(names(df), function(name) tags$th(name)))
+        tags$tr(lapply(seq_along(df), function(j) {
+          tags$th(
+            `data-sort-index` = j,
+            title = "Нажмите для сортировки",
+            tags$button(type = "button", class = "set-sort-button", names(df)[[j]], span(class = "set-sort-indicator", "↕"))
+          )
+        }))
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
@@ -450,6 +549,7 @@ set_table_ui <- function(df) {
               can_copy <- !is.na(commit) && nzchar(commit) && grepl("[[:xdigit:]]{7,}", commit)
               if (isTRUE(can_copy)) {
                 return(tags$td(
+                  `data-sort` = value,
                   div(
                     class = "commit-date-cell",
                     span(display_value),
@@ -495,6 +595,7 @@ set_table_ui <- function(df) {
               has_full_text <- any(nzchar(trimws(c(full_summary, full_details, full_aliases, full_references))), na.rm = TRUE)
               if (isTRUE(has_full_text)) {
                 return(tags$td(
+                  `data-sort` = value,
                   div(
                     class = "description-cell",
                     span(display_value),
@@ -513,7 +614,7 @@ set_table_ui <- function(df) {
                 ))
               }
             }
-            tags$td(display_value)
+            tags$td(`data-sort` = value, display_value)
           }))
         })
       )
@@ -972,6 +1073,7 @@ pdf_prepare_table <- function(df) {
   if (!is.data.frame(df) || nrow(df) == 0L || ncol(df) == 0L) {
     return(NULL)
   }
+  df <- set_apply_column_labels(df)
   df <- df[, seq_len(min(ncol(df), 4L)), drop = FALSE]
   as.data.frame(lapply(df, function(col) {
     value <- as.character(col)
@@ -1498,6 +1600,57 @@ ui <- fluidPage(
           references: String(button.attr('data-full-references') || ''),
           nonce: Date.now()
         }, {priority: 'event'});
+      });
+
+      function sortableCellValue(row, index) {
+        var cell = row.children[index];
+        if (!cell) return '';
+        var raw = cell.getAttribute('data-sort');
+        if (raw === null || raw === undefined) raw = cell.textContent || '';
+        return String(raw).trim();
+      }
+
+      function compareSortableValues(a, b) {
+        var emptyA = !a || a === '—';
+        var emptyB = !b || b === '—';
+        if (emptyA && emptyB) return 0;
+        if (emptyA) return 1;
+        if (emptyB) return -1;
+        var normalizedA = a.replace(',', '.').replace(/\\s+/g, '');
+        var normalizedB = b.replace(',', '.').replace(/\\s+/g, '');
+        var numberA = Number(normalizedA);
+        var numberB = Number(normalizedB);
+        if (!Number.isNaN(numberA) && !Number.isNaN(numberB)) {
+          return numberA - numberB;
+        }
+        var dateA = Date.parse(a);
+        var dateB = Date.parse(b);
+        if (!Number.isNaN(dateA) && !Number.isNaN(dateB)) {
+          return dateA - dateB;
+        }
+        return a.localeCompare(b, 'ru', {numeric: true, sensitivity: 'base'});
+      }
+
+      $(document).on('click', '.set-sortable-table th', function() {
+        var header = $(this);
+        var table = header.closest('table')[0];
+        if (!table || !table.tBodies.length) return;
+        var index = Number(header.attr('data-sort-index')) - 1;
+        if (Number.isNaN(index) || index < 0) return;
+        var current = header.attr('data-sort-dir') || 'none';
+        var direction = current === 'asc' ? 'desc' : 'asc';
+        var rows = Array.prototype.slice.call(table.tBodies[0].rows);
+        rows.sort(function(rowA, rowB) {
+          var result = compareSortableValues(sortableCellValue(rowA, index), sortableCellValue(rowB, index));
+          return direction === 'asc' ? result : -result;
+        });
+        rows.forEach(function(row) {
+          table.tBodies[0].appendChild(row);
+        });
+        $(table).find('th').removeAttr('data-sort-dir').removeClass('sorted-asc sorted-desc')
+          .find('.set-sort-indicator').text('↕');
+        header.attr('data-sort-dir', direction).addClass(direction === 'asc' ? 'sorted-asc' : 'sorted-desc')
+          .find('.set-sort-indicator').text(direction === 'asc' ? '↑' : '↓');
       });
 
       $(document).on('click', '#theme_hell', function() {
@@ -3046,6 +3199,41 @@ ui <- fluidPage(
         white-space: normal;
       }
 
+      .set-sort-button {
+        display: inline-flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 6px;
+        width: 100%;
+        min-height: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        line-height: 1.25;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .set-sort-button:hover,
+      .set-sort-button:focus {
+        color: var(--accent-hover);
+        outline: none;
+      }
+
+      .set-sort-indicator {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .set-report-table th.sorted-asc,
+      .set-report-table th.sorted-desc {
+        background: rgba(224, 24, 36, 0.12);
+      }
+
       .set-markdown table {
         width: 100%;
         margin: 10px 0;
@@ -4011,12 +4199,9 @@ server <- function(input, output, session) {
     nickname = NULL,
     avatar_id = "egypt_1",
     github_token = "",
-<<<<<<< HEAD
-    mythology_style = "egypt"
-=======
     github_token_name = "",
-    github_token_expires_at = NA_character_
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
+    github_token_expires_at = NA_character_,
+    mythology_style = "egypt"
   )
   parse_github_token_expires_at <- function(value) {
     value <- value %||% NA_character_
@@ -4054,6 +4239,16 @@ server <- function(input, output, session) {
     } else {
       NA_character_
     }
+    style <- if ("mythology_style" %in% names(row)) row$mythology_style[[1]] %||% "egypt" else "egypt"
+    style <- tolower(trimws(as.character(style)))
+    if (!style %in% c("egypt", "norse", "greece")) {
+      style <- "egypt"
+    }
+    if (identical(style, "greece")) {
+      style <- "egypt"
+    }
+    account$mythology_style <- style
+    mythology_style(style)
     invisible(TRUE)
   }
   github_rate_limit <- reactiveVal(list(
@@ -4707,12 +4902,9 @@ server <- function(input, output, session) {
     account$nickname <- NULL
     account$avatar_id <- "egypt_1"
     account$github_token <- ""
-<<<<<<< HEAD
-    apply_account_mythology_style("egypt")
-=======
     account$github_token_name <- ""
     account$github_token_expires_at <- NA_character_
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
+    apply_account_mythology_style("egypt")
     remember_token(NULL)
     remember_attempted(TRUE)
     report_archive(list())
@@ -4945,15 +5137,7 @@ server <- function(input, output, session) {
         avatar_id = account$avatar_id
       )
 
-<<<<<<< HEAD
-      account$email <- created$email[[1]]
-      account$nickname <- created$nickname[[1]]
-      account$avatar_id <- created$avatar_id[[1]]
-      account$github_token <- created$github_token[[1]] %||% ""
-      apply_account_mythology_style(created$mythology_style[[1]] %||% "egypt")
-=======
       apply_account_row(created)
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
       load_user_archive()
       current_page("analysis")
       notify_user("Аккаунт сохранён в ClickHouse.", type = "message")
@@ -4970,15 +5154,7 @@ server <- function(input, output, session) {
         password = input$login_password
       )
 
-<<<<<<< HEAD
-      account$email <- logged_in$email[[1]]
-      account$nickname <- logged_in$nickname[[1]]
-      account$avatar_id <- logged_in$avatar_id[[1]]
-      account$github_token <- logged_in$github_token[[1]] %||% ""
-      apply_account_mythology_style(logged_in$mythology_style[[1]] %||% "egypt")
-=======
       apply_account_row(logged_in)
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
       load_user_archive()
       if (isTRUE(input$remember_me)) {
         token_info <- issue_githound_remember_token(conn, logged_in$email[[1]], days = 30L)
@@ -5057,15 +5233,7 @@ server <- function(input, output, session) {
         avatar_id = account$avatar_id
       )
 
-<<<<<<< HEAD
-      account$email <- logged_in$email[[1]]
-      account$nickname <- logged_in$nickname[[1]]
-      account$avatar_id <- logged_in$avatar_id[[1]]
-      account$github_token <- logged_in$github_token[[1]] %||% ""
-      apply_account_mythology_style(logged_in$mythology_style[[1]] %||% "egypt")
-=======
       apply_account_row(logged_in)
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
       remember_attempted(TRUE)
       load_user_archive()
       current_page("analysis")
@@ -5108,15 +5276,7 @@ server <- function(input, output, session) {
 
     tryCatch({
       remembered <- login_githound_account_by_remember_token(conn, token)
-<<<<<<< HEAD
-      account$email <- remembered$email[[1]]
-      account$nickname <- remembered$nickname[[1]]
-      account$avatar_id <- remembered$avatar_id[[1]]
-      account$github_token <- remembered$github_token[[1]] %||% ""
-      apply_account_mythology_style(remembered$mythology_style[[1]] %||% "egypt")
-=======
       apply_account_row(remembered)
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
       remember_token(token)
       load_user_archive()
       current_page("analysis")

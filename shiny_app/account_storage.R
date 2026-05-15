@@ -202,6 +202,18 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
     ),
     parse_json = FALSE
   )
+  try(
+    clickhouse_request(
+      conn,
+      paste0(
+        "ALTER TABLE ",
+        quote_table_ident(table_name, conn$dbname),
+        " ADD COLUMN IF NOT EXISTS mythology_style String DEFAULT 'egypt'"
+      ),
+      parse_json = FALSE
+    ),
+    silent = TRUE
+  )
   invisible(TRUE)
 }
 
@@ -224,18 +236,6 @@ ensure_githound_remember_table <- function(conn, table_name = "githound_remember
   )
 
   clickhouse_request(conn, sql, parse_json = FALSE)
-  try(
-    clickhouse_request(
-      conn,
-      paste0(
-        "ALTER TABLE ",
-        quote_table_ident(table_name, conn$dbname),
-        " ADD COLUMN IF NOT EXISTS mythology_style String DEFAULT 'egypt'"
-      ),
-      parse_json = FALSE
-    ),
-    silent = TRUE
-  )
   invisible(TRUE)
 }
 
@@ -604,14 +604,9 @@ login_or_register_github_account <- function(
   }
 
   load_df_to_clickhouse(row[, c(
-<<<<<<< HEAD
-    "user_id", "email", "password_hash", "nickname", "github_token",
-    "avatar_id", "mythology_style", "created_at", "updated_at", "version"
-=======
     "user_id", "email", "password_hash", "nickname", "github_id", "github_login", "github_token",
     "github_token_name", "github_token_expires_at",
-    "avatar_id", "created_at", "updated_at", "version"
->>>>>>> 59b373d0f6793d5a199931c7a6dba40ef55b3205
+    "avatar_id", "mythology_style", "created_at", "updated_at", "version"
   ), drop = FALSE], table_name = table_name, conn = conn, append = TRUE)
   try(cleanup_githound_github_duplicates(conn, github_id, row$email[[1]], table_name), silent = TRUE)
 
