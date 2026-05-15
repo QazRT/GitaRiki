@@ -161,6 +161,7 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
     "github_token_name String, ",
     "github_token_expires_at Nullable(DateTime), ",
     "avatar_id String, ",
+    "mythology_style String DEFAULT 'egypt', ",
     "created_at DateTime, ",
     "updated_at DateTime, ",
     "version UInt64",
@@ -200,6 +201,18 @@ ensure_githound_accounts_table <- function(conn, table_name = "githound_accounts
       " ADD COLUMN IF NOT EXISTS github_token_expires_at Nullable(DateTime)"
     ),
     parse_json = FALSE
+  )
+  try(
+    clickhouse_request(
+      conn,
+      paste0(
+        "ALTER TABLE ",
+        quote_table_ident(table_name, conn$dbname),
+        " ADD COLUMN IF NOT EXISTS mythology_style String DEFAULT 'egypt'"
+      ),
+      parse_json = FALSE
+    ),
+    silent = TRUE
   )
   invisible(TRUE)
 }
@@ -460,6 +473,61 @@ login_githound_account <- function(
   account[1, , drop = FALSE]
 }
 
+validate_githound_password <- function(password, email = "", nickname = "") {
+  password <- enc2utf8(as.character(password %||% ""))
+  email <- normalize_githound_email(email %||% "")
+  nickname <- tolower(trimws(enc2utf8(as.character(nickname %||% ""))))
+  local_part <- sub("@.*$", "", email)
+  lowered <- tolower(password)
+
+  errors <- character()
+  if (nchar(password, type = "chars") < 10L) {
+    errors <- c(errors, "не короче 10 символов")
+  }
+  if (grepl("\\s", password, perl = TRUE)) {
+    errors <- c(errors, "без пробелов")
+  }
+  if (!grepl("[[:lower:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать строчную букву")
+  }
+  if (!grepl("[[:upper:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать заглавную букву")
+  }
+  if (!grepl("[[:digit:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать цифру")
+  }
+  if (!grepl("[^[:alnum:]\\s]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать специальный символ")
+  }
+
+  weak_passwords <- c(
+    "password", "password1", "qwerty", "qwerty123", "123456",
+    "123456789", "admin", "admin123", "letmein", "welcome"
+  )
+  if (lowered %in% weak_passwords) {
+    errors <- c(errors, "не быть распространенным слабым паролем")
+  }
+  if (nzchar(local_part) && nchar(local_part) >= 4L && grepl(local_part, lowered, fixed = TRUE)) {
+    errors <- c(errors, "не содержать часть почты")
+  }
+  if (nzchar(nickname) && nchar(nickname) >= 4L && grepl(nickname, lowered, fixed = TRUE)) {
+    errors <- c(errors, "не содержать ник")
+  }
+
+  if (length(errors) > 0L) {
+    stop(
+      paste0(
+        "Пароль должен: ",
+        paste(unique(errors), collapse = "; "),
+        "."
+      ),
+      call. = FALSE
+    )
+  }
+
+  invisible(TRUE)
+}
+
 register_githound_account <- function(
     conn,
     email,
@@ -475,12 +543,10 @@ register_githound_account <- function(
   if (!grepl("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", email)) {
     stop("Введите корректную почту.", call. = FALSE)
   }
-  if (nchar(password) < 6L) {
-    stop("Пароль должен быть не короче 6 символов.", call. = FALSE)
-  }
   if (!nzchar(nickname)) {
     stop("Введите ник.", call. = FALSE)
   }
+  validate_githound_password(password, email = email, nickname = nickname)
 
   existing_count <- count_githound_accounts(conn, email, table_name)
   if (existing_count > 0L) {
@@ -499,6 +565,7 @@ register_githound_account <- function(
     github_token_name = "",
     github_token_expires_at = NA_character_,
     avatar_id = avatar_id,
+    mythology_style = "egypt",
     created_at = now,
     updated_at = now,
     version = as.integer(as.numeric(Sys.time())),
@@ -581,6 +648,7 @@ login_or_register_github_account <- function(
       github_token_name = github_token_name,
       github_token_expires_at = github_token_expires_at,
       avatar_id = avatar_id,
+      mythology_style = "egypt",
       created_at = now,
       updated_at = now,
       version = as.integer(as.numeric(Sys.time())),
@@ -591,7 +659,7 @@ login_or_register_github_account <- function(
   load_df_to_clickhouse(row[, c(
     "user_id", "email", "password_hash", "nickname", "github_id", "github_login", "github_token",
     "github_token_name", "github_token_expires_at",
-    "avatar_id", "created_at", "updated_at", "version"
+    "avatar_id", "mythology_style", "created_at", "updated_at", "version"
   ), drop = FALSE], table_name = table_name, conn = conn, append = TRUE)
   try(cleanup_githound_github_duplicates(conn, github_id, row$email[[1]], table_name), silent = TRUE)
 
@@ -651,6 +719,40 @@ update_githound_account_profile <- function(
 
   clickhouse_request(conn, update_sql, parse_json = FALSE)
   row
+}
+
+update_githound_account_mythology_style <- function(
+    conn,
+    email,
+    mythology_style,
+    table_name = "githound_accounts"
+) {
+  email <- normalize_githound_email(email)
+  mythology_style <- tolower(trimws(enc2utf8(mythology_style %||% "egypt")))
+  if (!mythology_style %in% c("egypt", "norse", "greece")) {
+    mythology_style <- "egypt"
+  }
+  account <- get_githound_account(conn, email, table_name)
+  if (!is.data.frame(account) || nrow(account) == 0L) {
+    stop("Аккаунт не найден.", call. = FALSE)
+  }
+
+  now <- format(Sys.time(), "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  update_sql <- paste0(
+    "ALTER TABLE ",
+    quote_table_ident(table_name, conn$dbname),
+    " UPDATE mythology_style = ",
+    githound_sql_string(mythology_style),
+    ", updated_at = toDateTime(",
+    githound_sql_string(now),
+    ") WHERE lower(email) = ",
+    githound_sql_string(email)
+  )
+
+  clickhouse_request(conn, update_sql, parse_json = FALSE)
+  account$mythology_style <- mythology_style
+  account$updated_at <- now
+  account
 }
 
 `%||%` <- function(x, y) {
