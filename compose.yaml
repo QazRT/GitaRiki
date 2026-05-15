@@ -7,4 +7,3 @@ services:
       - 3838:3838
     container_name: gitariki
     image: gitariki
-networks: {}
