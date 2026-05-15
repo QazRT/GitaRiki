@@ -426,6 +426,8 @@ mcp_openai_request <- function(
 #' @param max_tool_rounds Max number of tool-call iterations.
 #' @param timeout Timeout in seconds.
 #' @param extra_body Extra request body fields.
+#' @param progressbar Callback function called with progress percentage and an
+#'   optional label during tool-call rounds.
 #' @param verbose_tools If `TRUE`, prints tool calls as they are executed.
 #'
 #' @return List with `messages`, last `response`, `final_message`, and
@@ -787,6 +789,8 @@ mcp_default_ai_assets <- function() {
 #' @param allowed_tables Optional vector of ClickHouse tables visible to AI.
 #' @param max_rows Max rows returned per ClickHouse query.
 #' @param system_prompt Optional system prompt.
+#' @param progressbar Callback function passed to [mcp_openai_chat()] for
+#'   progress reporting.
 #' @param ... Extra arguments passed to `mcp_openai_chat()`.
 #'
 #' @return Chat result from `mcp_openai_chat()`.
