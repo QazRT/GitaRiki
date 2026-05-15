@@ -473,6 +473,61 @@ login_githound_account <- function(
   account[1, , drop = FALSE]
 }
 
+validate_githound_password <- function(password, email = "", nickname = "") {
+  password <- enc2utf8(as.character(password %||% ""))
+  email <- normalize_githound_email(email %||% "")
+  nickname <- tolower(trimws(enc2utf8(as.character(nickname %||% ""))))
+  local_part <- sub("@.*$", "", email)
+  lowered <- tolower(password)
+
+  errors <- character()
+  if (nchar(password, type = "chars") < 10L) {
+    errors <- c(errors, "не короче 10 символов")
+  }
+  if (grepl("\\s", password, perl = TRUE)) {
+    errors <- c(errors, "без пробелов")
+  }
+  if (!grepl("[[:lower:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать строчную букву")
+  }
+  if (!grepl("[[:upper:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать заглавную букву")
+  }
+  if (!grepl("[[:digit:]]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать цифру")
+  }
+  if (!grepl("[^[:alnum:]\\s]", password, perl = TRUE)) {
+    errors <- c(errors, "содержать специальный символ")
+  }
+
+  weak_passwords <- c(
+    "password", "password1", "qwerty", "qwerty123", "123456",
+    "123456789", "admin", "admin123", "letmein", "welcome"
+  )
+  if (lowered %in% weak_passwords) {
+    errors <- c(errors, "не быть распространенным слабым паролем")
+  }
+  if (nzchar(local_part) && nchar(local_part) >= 4L && grepl(local_part, lowered, fixed = TRUE)) {
+    errors <- c(errors, "не содержать часть почты")
+  }
+  if (nzchar(nickname) && nchar(nickname) >= 4L && grepl(nickname, lowered, fixed = TRUE)) {
+    errors <- c(errors, "не содержать ник")
+  }
+
+  if (length(errors) > 0L) {
+    stop(
+      paste0(
+        "Пароль должен: ",
+        paste(unique(errors), collapse = "; "),
+        "."
+      ),
+      call. = FALSE
+    )
+  }
+
+  invisible(TRUE)
+}
+
 register_githound_account <- function(
     conn,
     email,
@@ -488,12 +543,10 @@ register_githound_account <- function(
   if (!grepl("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", email)) {
     stop("Введите корректную почту.", call. = FALSE)
   }
-  if (nchar(password) < 6L) {
-    stop("Пароль должен быть не короче 6 символов.", call. = FALSE)
-  }
   if (!nzchar(nickname)) {
     stop("Введите ник.", call. = FALSE)
   }
+  validate_githound_password(password, email = email, nickname = nickname)
 
   existing_count <- count_githound_accounts(conn, email, table_name)
   if (existing_count > 0L) {

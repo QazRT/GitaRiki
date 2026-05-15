@@ -182,7 +182,7 @@ registration_screen <- function() {
       class = "form",
       h2(class = "section-title", "Регистрация"),
       textInput("register_email", "Почта", placeholder = "you@example.com"),
-      passwordInput("register_password", "Пароль", placeholder = "Минимум 6 символов"),
+      passwordInput("register_password", "Пароль", placeholder = "10+ символов: Aa, цифра и спецсимвол"),
       textInput("register_nickname", "Ник", placeholder = "Ваш ник в GitHound"),
       actionButton("submit_registration", "Создать аккаунт", class = "run-button"),
       actionButton("github_login", "Войти через GitHub", class = "menu-button secondary-button github-login-button"),
