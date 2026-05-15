@@ -6,6 +6,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV R_LIBS_SITE=/opt/R/site-library:/usr/local/lib/R/site-library:/usr/lib/R/site-library
 ENV R_LIBS=/opt/R/site-library
 ENV RENV_CONFIG_SANDBOX_ENABLED=false
+# Build-time smoke checks must not depend on a local .Renviron. These are
+# harmless placeholders; real ClickHouse settings should be provided at runtime.
+ENV CLICKHOUSE_HOST=localhost
+ENV CLICKHOUSE_PORT=8123
+ENV CLICKHOUSE_DB=default
+ENV CLICKHOUSE_USER=default
+ENV CLICKHOUSE_PASSWORD=
+ENV CLICKHOUSE_HTTPS=false
+ENV CH_HOST=localhost
+ENV CH_PORT=8123
+ENV CH_DB=default
+ENV CH_USER=default
+ENV CH_PASSWORD=
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -101,6 +114,19 @@ ENV PATH=/usr/local/bin:/usr/bin:/bin
 ENV PORT=3838
 ENV HOME=/app
 ENV TMPDIR=/app/tmp
+# Runtime defaults keep the app bootable in smoke tests. Override these with
+# real deployment values via docker run/compose/Kubernetes environment.
+ENV CLICKHOUSE_HOST=localhost
+ENV CLICKHOUSE_PORT=8123
+ENV CLICKHOUSE_DB=default
+ENV CLICKHOUSE_USER=default
+ENV CLICKHOUSE_PASSWORD=
+ENV CLICKHOUSE_HTTPS=false
+ENV CH_HOST=localhost
+ENV CH_PORT=8123
+ENV CH_DB=default
+ENV CH_USER=default
+ENV CH_PASSWORD=
 
 WORKDIR /app
 
