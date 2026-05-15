@@ -1,5 +1,23 @@
-# Function to fetch GitHub user commits with ClickHouse caching.
-
+#' Collect GitHub commits for a user.
+#'
+#' Fetches commits authored by a GitHub user across selected repositories and
+#' stores newly collected rows in ClickHouse. Existing rows are read from the
+#' cache table and de-duplicated by profile, repository, and commit SHA.
+#'
+#' @param profile GitHub username or profile URL.
+#' @param token Optional GitHub token. Using a token is recommended to avoid
+#'   strict unauthenticated API limits.
+#' @param repos Optional character vector of repositories in `owner/repo`
+#'   format. If `NULL`, repositories are discovered for `profile`.
+#' @param max_repos Optional maximum number of repositories to process.
+#' @param include_stats If `TRUE`, request per-commit additions, deletions, and
+#'   changed-file statistics.
+#' @param commit_workers Optional number of parallel workers for repository
+#'   commit collection. When `NULL`, environment variables are consulted.
+#' @param conn Required ClickHouse connection used for cache reads and writes.
+#'
+#' @return A data frame of commits sorted by repository, date, and SHA.
+#' @export
 get_user_commits <- function(profile,
                              token = NULL,
                              repos = NULL,

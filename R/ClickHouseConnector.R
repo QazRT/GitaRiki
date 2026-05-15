@@ -291,7 +291,24 @@ insert_df_custom <- function(conn, table_name, df) {
   invisible(TRUE)
 }
 
-# Connect to ClickHouse in stateless HTTP mode.
+#' Connect to ClickHouse over HTTP.
+#'
+#' Creates a lightweight stateless connection object used by the package's
+#' ClickHouse helpers. The connection sends SQL through the ClickHouse HTTP
+#' interface and does not keep an open DBI session.
+#'
+#' @param host ClickHouse host name or IP address.
+#' @param port ClickHouse HTTP port.
+#' @param dbname Default ClickHouse database.
+#' @param user ClickHouse user name.
+#' @param password ClickHouse password.
+#' @param https Use HTTPS instead of HTTP.
+#' @param ... Reserved for future compatibility; currently ignored.
+#'
+#' @return An object of class `gitariki_clickhouse_conn`.
+#' @examples
+#' conn <- connect_clickhouse(host = "localhost", port = 8123)
+#' @export
 connect_clickhouse <- function(
     host = "localhost",
     port = 8123,
@@ -324,6 +341,22 @@ connect_clickhouse <- function(
   conn
 }
 
+#' Load a data frame into a ClickHouse table.
+#'
+#' Creates the target table when it does not exist and inserts rows from `df`.
+#' The function supports both the package HTTP connection object returned by
+#' [connect_clickhouse()] and regular DBI-compatible connections.
+#'
+#' @param df Data frame to load.
+#' @param table_name Target table name. Use either `"table"` or
+#'   `"database.table"` for the HTTP connector.
+#' @param conn ClickHouse connection returned by [connect_clickhouse()] or a
+#'   DBI-compatible connection.
+#' @param overwrite If `TRUE`, drop the existing table before creating it again.
+#' @param append If `TRUE`, append rows to an existing or newly created table.
+#'
+#' @return Invisibly returns `TRUE` after a successful load.
+#' @export
 load_df_to_clickhouse <- function(
     df,
     table_name,
@@ -381,6 +414,18 @@ load_df_to_clickhouse <- function(
   invisible(TRUE)
 }
 
+#' Run a SQL query against ClickHouse.
+#'
+#' Executes a SQL statement and returns the result as a data frame. When `conn`
+#' is the package HTTP connector, `FORMAT JSON` is added automatically unless
+#' the query already contains an explicit `FORMAT` clause.
+#'
+#' @param conn ClickHouse connection returned by [connect_clickhouse()] or a
+#'   DBI-compatible connection.
+#' @param sql SQL statement to execute.
+#'
+#' @return A data frame with query results.
+#' @export
 query_clickhouse <- function(conn, sql) {
   stopifnot(is.character(sql), length(sql) == 1L, nzchar(sql))
 
@@ -393,6 +438,19 @@ query_clickhouse <- function(conn, sql) {
   DBI::dbGetQuery(conn, sql)
 }
 
+#' Import a ClickHouse table into R.
+#'
+#' Convenience wrapper around `SELECT * FROM table`, optionally limited to the
+#' first `limit` rows.
+#'
+#' @param conn ClickHouse connection returned by [connect_clickhouse()] or a
+#'   DBI-compatible connection.
+#' @param table_name Table name to read. Use either `"table"` or
+#'   `"database.table"` for the HTTP connector.
+#' @param limit Optional non-negative maximum number of rows to return.
+#'
+#' @return A data frame containing table rows.
+#' @export
 import_table <- function(conn, table_name, limit = NULL) {
   stopifnot(is.character(table_name), length(table_name) == 1L, nzchar(table_name))
 
