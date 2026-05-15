@@ -83,11 +83,123 @@
   if (length(urls) == 0L) "" else paste(urls, collapse = ",")
 }
 
+.osv_cvss_rating <- function(score) {
+  score <- suppressWarnings(as.numeric(score))
+  if (!is.finite(score) || is.na(score)) return(NA_character_)
+  if (score == 0) "None" else if (score < 4) "Low" else if (score < 7) "Medium" else if (score < 9) "High" else "Critical"
+}
+
+.osv_cvss_v3_base_score <- function(vector) {
+  if (!.osv_non_empty(vector) || !grepl("^CVSS:3\\.[01]/", vector)) return(NA_real_)
+
+  parts <- strsplit(vector, "/", fixed = TRUE)[[1]]
+  metrics <- parts[-1L]
+  kv <- strsplit(metrics, ":", fixed = TRUE)
+  vals <- vapply(kv, function(x) if (length(x) == 2L) x[[2L]] else NA_character_, character(1))
+  names(vals) <- vapply(kv, function(x) if (length(x) == 2L) x[[1L]] else "", character(1))
+
+  req <- c("AV", "AC", "PR", "UI", "S", "C", "I", "A")
+  if (!all(req %in% names(vals))) return(NA_real_)
+
+  av <- c(N = 0.85, A = 0.62, L = 0.55, P = 0.2)[[vals[["AV"]]]]
+  ac <- c(L = 0.77, H = 0.44)[[vals[["AC"]]]]
+  ui <- c(N = 0.85, R = 0.62)[[vals[["UI"]]]]
+  cval <- c(H = 0.56, L = 0.22, N = 0)[[vals[["C"]]]]
+  ival <- c(H = 0.56, L = 0.22, N = 0)[[vals[["I"]]]]
+  aval <- c(H = 0.56, L = 0.22, N = 0)[[vals[["A"]]]]
+  if (any(vapply(list(av, ac, ui, cval, ival, aval), is.null, logical(1)))) return(NA_real_)
+
+  scope_changed <- identical(vals[["S"]], "C")
+  pr <- if (scope_changed) {
+    c(N = 0.85, L = 0.68, H = 0.5)[[vals[["PR"]]]]
+  } else {
+    c(N = 0.85, L = 0.62, H = 0.27)[[vals[["PR"]]]]
+  }
+  if (is.null(pr)) return(NA_real_)
+
+  impact_sub <- 1 - ((1 - cval) * (1 - ival) * (1 - aval))
+  impact <- if (scope_changed) {
+    7.52 * (impact_sub - 0.029) - 3.25 * ((impact_sub - 0.02) ^ 15)
+  } else {
+    6.42 * impact_sub
+  }
+  exploitability <- 8.22 * av * ac * pr * ui
+  if (impact <= 0) return(0)
+
+  score <- if (scope_changed) {
+    min(1.08 * (impact + exploitability), 10)
+  } else {
+    min(impact + exploitability, 10)
+  }
+  ceiling(score * 10) / 10
+}
+
+.osv_unbox_named_list <- function(x) {
+  if (is.list(x) &&
+      length(x) == 1L &&
+      is.list(x[[1L]]) &&
+      length(names(x)) == 0L) {
+    return(x[[1L]])
+  }
+  x
+}
+
+.osv_extract_cvss <- function(doc) {
+  severity <- .osv_unbox_named_list(doc$severity)
+  candidates <- list()
+  add_candidate <- function(type, score) {
+    if (.osv_non_empty(score)) {
+      candidates[[length(candidates) + 1L]] <<- list(type = .osv_to_scalar(type), score = .osv_to_scalar(score))
+    }
+  }
+
+  if (is.list(severity) && length(severity) > 0L) {
+    if (is.data.frame(severity)) {
+      for (i in seq_len(nrow(severity))) {
+        add_candidate(severity$type[[i]], severity$score[[i]])
+      }
+    } else if (!is.null(severity$type) || !is.null(severity$score)) {
+      add_candidate(severity$type, severity$score)
+    } else {
+      for (item in severity) {
+        item <- .osv_unbox_named_list(item)
+        if (is.list(item)) add_candidate(item$type, item$score)
+      }
+    }
+  }
+
+  dbs <- .osv_unbox_named_list(doc$database_specific)
+  if (is.list(dbs)) {
+    add_candidate("database_specific", .osv_null(dbs$cvss_vector, dbs$cvss))
+    add_candidate("database_specific", .osv_null(dbs$cvss_v3, dbs$cvss_v31))
+  }
+
+  if (length(candidates) == 0L) {
+    return(list(version = NA_character_, vector = NA_character_, base_score = NA_real_, severity = NA_character_))
+  }
+
+  scores <- vapply(candidates, function(x) x$score, character(1))
+  v31_idx <- grep("^CVSS:3\\.1/", scores)
+  v3_idx <- grep("^CVSS:3\\.[01]/", scores)
+  idx <- if (length(v31_idx) > 0L) v31_idx[[1L]] else if (length(v3_idx) > 0L) v3_idx[[1L]] else 1L
+  vector <- scores[[idx]]
+  base_score <- .osv_cvss_v3_base_score(vector)
+  version <- if (grepl("^CVSS:3\\.1/", vector)) "3.1" else if (grepl("^CVSS:3\\.0/", vector)) "3.0" else NA_character_
+
+  list(
+    version = version,
+    vector = vector,
+    base_score = base_score,
+    severity = .osv_cvss_rating(base_score)
+  )
+}
+
 .osv_match_to_df <- function(doc, query_purl, query_version, match_info) {
   osv_id_value <- .osv_to_scalar(doc$id)
   if (!.osv_non_empty(osv_id_value)) {
     osv_id_value <- .osv_to_scalar(doc$osv_id)
   }
+  cvss <- .osv_extract_cvss(doc)
 
   data.frame(
     osv_id = osv_id_value,
@@ -97,6 +209,10 @@
     modified = .osv_to_scalar(doc$modified),
     aliases = .osv_collapse_values(doc$aliases),
     references = .osv_reference_urls(doc$references),
+    cvss_version = cvss$version,
+    cvss_vector = cvss$vector,
+    cvss_base_score = cvss$base_score,
+    cvss_severity = cvss$severity,
     query_purl = query_purl,
     query_version = if (is.null(query_version)) NA_character_ else query_version,
     matched_purl = match_info$matched_purl,
@@ -330,6 +446,8 @@ search_osv_vulnerabilities_mongo <- function(
     modified = 1,
     aliases = 1,
     references = 1,
+    severity = 1,
+    database_specific = 1,
     json_path = 1,
     affected = 1
   )

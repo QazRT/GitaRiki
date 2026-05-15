@@ -1213,6 +1213,19 @@ quality_save_to_clickhouse <- function(result, conn = NULL) {
   }
 
   run_id <- result$run_id %||% format(Sys.time(), "%Y%m%d%H%M%S")
+  scalar_text <- function(x, default = "") {
+    if (is.null(x) || length(x) == 0L || (is.atomic(x) && length(x) == 1L && is.na(x))) {
+      return(default)
+    }
+    as.character(x[[1L]])
+  }
+  scalar_num <- function(x, default = -1) {
+    if (is.null(x) || length(x) == 0L || (is.atomic(x) && length(x) == 1L && is.na(x))) {
+      return(default)
+    }
+    value <- suppressWarnings(as.numeric(x[[1L]]))
+    if (is.na(value)) default else value
+  }
   add_run_cols <- function(df) {
     if (!is.data.frame(df) || nrow(df) == 0L) {
       return(df)
@@ -1222,45 +1235,59 @@ quality_save_to_clickhouse <- function(result, conn = NULL) {
     df$fetched_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
     df
   }
-
-  tryCatch({
-    metrics <- add_run_cols(result$repo_metrics)
-    findings <- add_run_cols(result$findings)
-    overall <- add_run_cols(result$overall)
-    ai_review <- result$ai_review %||% list()
-    ai_summary <- data.frame()
-    ai_selected <- data.frame()
-    if (is.list(ai_review) && length(ai_review) > 0L) {
-      parsed <- ai_review$parsed %||% list()
-      ai_summary <- data.frame(
-        status = ai_review$status %||% "unknown",
-        message = ai_review$message %||% "",
-        score = parsed$score %||% NA_real_,
-        confidence = parsed$confidence %||% NA_real_,
-        readability_score = parsed$readability_score %||% NA_real_,
-        best_practice_score = parsed$best_practice_score %||% NA_real_,
-        structure_score = parsed$structure_score %||% NA_real_,
-        ai_generated_likelihood = parsed$ai_generated_likelihood %||% NA_real_,
-        summary = parsed$summary %||% "",
-        strengths = paste(as.character(unlist(parsed$strengths %||% character(), use.names = FALSE)), collapse = " | "),
-        weaknesses = paste(as.character(unlist(parsed$weaknesses %||% character(), use.names = FALSE)), collapse = " | "),
-        recommendations = paste(as.character(unlist(parsed$recommendations %||% character(), use.names = FALSE)), collapse = " | "),
-        stringsAsFactors = FALSE
-      )
-      ai_selected <- ai_review$selected_files %||% data.frame()
+  save_table <- function(df, table_name) {
+    if (!is.data.frame(df) || nrow(df) == 0L) {
+      return(FALSE)
     }
-    ai_summary <- add_run_cols(ai_summary)
-    ai_selected <- add_run_cols(ai_selected)
-    if (nrow(metrics) > 0L) load_df_to_clickhouse(metrics, "github_code_quality_repo_metrics", conn = conn, overwrite = FALSE, append = TRUE)
-    if (nrow(findings) > 0L) load_df_to_clickhouse(findings, "github_code_quality_findings", conn = conn, overwrite = FALSE, append = TRUE)
-    if (nrow(overall) > 0L) load_df_to_clickhouse(overall, "github_code_quality_overall", conn = conn, overwrite = FALSE, append = TRUE)
-    if (nrow(ai_summary) > 0L) load_df_to_clickhouse(ai_summary, "github_code_quality_ai_review", conn = conn, overwrite = FALSE, append = TRUE)
-    if (nrow(ai_selected) > 0L) load_df_to_clickhouse(ai_selected, "github_code_quality_ai_selected_files", conn = conn, overwrite = FALSE, append = TRUE)
-    TRUE
-  }, error = function(e) {
-    warning("Failed to save code quality analysis to ClickHouse: ", conditionMessage(e))
-    FALSE
-  })
+    tryCatch({
+      load_df_to_clickhouse(df, table_name, conn = conn, overwrite = FALSE, append = TRUE)
+      TRUE
+    }, error = function(e) {
+      warning("Failed to save ", table_name, " to ClickHouse: ", conditionMessage(e))
+      FALSE
+    })
+  }
+
+  metrics <- add_run_cols(result$repo_metrics)
+  findings <- add_run_cols(result$findings)
+  overall <- add_run_cols(result$overall)
+  if (is.data.frame(overall) && nrow(overall) > 0L && "value" %in% names(overall)) {
+    overall$value <- ifelse(is.na(overall$value), -1, overall$value)
+  }
+
+  ai_review <- result$ai_review %||% list()
+  ai_summary <- data.frame()
+  ai_selected <- data.frame()
+  if (is.list(ai_review) && length(ai_review) > 0L) {
+    parsed <- ai_review$parsed %||% list()
+    ai_summary <- data.frame(
+      status = scalar_text(ai_review$status, "unknown"),
+      message = scalar_text(ai_review$message, ""),
+      score = scalar_num(parsed$score),
+      confidence = scalar_num(parsed$confidence),
+      readability_score = scalar_num(parsed$readability_score),
+      best_practice_score = scalar_num(parsed$best_practice_score),
+      structure_score = scalar_num(parsed$structure_score),
+      ai_generated_likelihood = scalar_num(parsed$ai_generated_likelihood),
+      summary = scalar_text(parsed$summary, ""),
+      strengths = paste(as.character(unlist(parsed$strengths %||% character(), use.names = FALSE)), collapse = " | "),
+      weaknesses = paste(as.character(unlist(parsed$weaknesses %||% character(), use.names = FALSE)), collapse = " | "),
+      recommendations = paste(as.character(unlist(parsed$recommendations %||% character(), use.names = FALSE)), collapse = " | "),
+      stringsAsFactors = FALSE
+    )
+    ai_selected <- ai_review$selected_files %||% data.frame()
+  }
+  ai_summary <- add_run_cols(ai_summary)
+  ai_selected <- add_run_cols(ai_selected)
+
+  saved <- c(
+    repo_metrics = save_table(metrics, "github_code_quality_repo_metrics"),
+    findings = save_table(findings, "github_code_quality_findings"),
+    overall = save_table(overall, "github_code_quality_overall"),
+    ai_review = save_table(ai_summary, "github_code_quality_ai_review"),
+    ai_selected_files = save_table(ai_selected, "github_code_quality_ai_selected_files")
+  )
+  invisible(any(saved))
 }
 
 analyze_code_quality_profile <- function(profile,
