@@ -107,10 +107,14 @@ avatar_css <- function(id) {
 
   index <- as.integer(sub(".*_", "", row$id[[1]]))
   positions <- c("0% 0%", "100% 0%", "0% 100%", "100% 100%")
+  if (is.na(index) || index < 1L || index > length(positions)) {
+    index <- 1L
+  }
 
   paste0(
     "background-image: url('avatars-", row$group[[1]], ".png');",
-    "background-position: ", positions[[index]], ";"
+    "background-position: ", positions[[index]], ";",
+    "background-size: 200% 200%; background-repeat: no-repeat;"
   )
 }
 
@@ -150,8 +154,18 @@ mini_thoth_tip <- function(text, norse_text = NULL) {
       `aria-label` = "Закрыть совет",
       "x"
     ),
-    img(src = "mini-thoth.svg", class = "mini-thoth-avatar mini-thoth-avatar-egypt", alt = "Мини-Тот"),
-    img(src = "mini-raven.png", class = "mini-thoth-avatar mini-thoth-avatar-norse", alt = "Мини-ворон"),
+    img(
+      src = "mini-thoth.svg",
+      class = "mini-thoth-avatar mini-thoth-avatar-egypt",
+      alt = "Мини-Тот",
+      style = "width:48px;max-width:48px;height:auto;max-height:88px;object-fit:contain;"
+    ),
+    img(
+      src = "mini-raven.png",
+      class = "mini-thoth-avatar mini-thoth-avatar-norse",
+      alt = "Мини-ворон",
+      style = "width:58px;max-width:58px;height:auto;max-height:92px;object-fit:contain;"
+    ),
     div(
       class = "mini-thoth-scroll",
       div(class = "mini-thoth-title mini-thoth-title-egypt", "Совет мини-Тота"),
@@ -397,11 +411,27 @@ set_column_labels <- c(
   total_repo_forks = "Форки",
   total_repo_size_kb = "Размер, КБ",
   popularity_index = "Индекс популярности",
+  context = "Контекст",
+  primary_language = "Язык",
+  quality_score = "Скор качества",
+  score = "Скор",
+  confidence = "Уверенность",
+  code_files = "Файлы кода",
+  test_files = "Файлы тестов",
+  ci_files = "Файлы CI",
+  dependency_files = "Файлы зависимостей",
+  lock_files = "Lock-файлы",
+  tests = "Тесты",
+  deps = "Зависимости",
+  locks = "Lock-файлы",
+  severity = "Критичность",
+  category = "Категория",
+  finding = "Замечание",
+  evidence = "Доказательство",
   vulnerability_check = "Проверка уязвимостей",
   package = "Пакет",
   package_name = "Пакет",
   ecosystem = "Экосистема",
-  severity = "Критичность",
   summary = "Описание",
   details = "Подробности",
   aliases = "Алиасы",
@@ -419,8 +449,8 @@ set_pretty_column_name <- function(name) {
   original <- as.character(name)
   key <- tolower(gsub("[^[:alnum:]_]+", "_", original))
   key <- gsub("^_+|_+$", "", key)
-  label <- unname(set_column_labels[[key]])
-  if (!is.null(label) && length(label) == 1L && !is.na(label) && nzchar(label)) {
+  label <- unname(set_column_labels[key])
+  if (length(label) == 1L && !is.na(label) && nzchar(label)) {
     return(label)
   }
   if (grepl("[_]", original)) {
@@ -607,12 +637,20 @@ set_table_ui <- function(df) {
     tags$table(
       class = "set-report-table set-sortable-table",
       tags$thead(
-        tags$tr(lapply(names(df), function(name) {
+        tags$tr(lapply(seq_along(names(df)), function(j) {
+          name <- names(df)[[j]]
+          sort_button <- tags$button(
+            type = "button",
+            class = "set-sort-button",
+            span(name),
+            span(class = "set-sort-indicator", HTML("&#8597;"))
+          )
           if (identical(name, "EPSS")) {
             tags$th(
+              `data-sort-index` = j,
               div(
                 class = "epss-header-cell",
-                span(name),
+                sort_button,
                 tags$button(
                   type = "button",
                   class = "epss-fetch-all-button",
@@ -622,7 +660,7 @@ set_table_ui <- function(df) {
               )
             )
           } else {
-            tags$th(name)
+            tags$th(`data-sort-index` = j, sort_button)
           }
         }))
       ),
@@ -3380,7 +3418,7 @@ ui <- fluidPage(
 
       .set-report-table {
         width: 100%;
-        min-width: 640px;
+        min-width: 920px;
         border-collapse: collapse;
         table-layout: fixed;
         font-size: 14px;
@@ -3403,13 +3441,14 @@ ui <- fluidPage(
         color: var(--accent);
         font-weight: 900;
         white-space: normal;
+        line-height: 1.18;
       }
 
       .set-sort-button {
-        display: inline-flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 14px;
+        align-items: start;
+        gap: 8px;
         width: 100%;
         min-height: 100%;
         padding: 0;
@@ -3417,9 +3456,12 @@ ui <- fluidPage(
         background: transparent;
         color: inherit;
         font: inherit;
-        line-height: 1.25;
+        line-height: 1.18;
         text-align: left;
         cursor: pointer;
+        white-space: normal;
+        word-break: normal;
+        overflow-wrap: anywhere;
       }
 
       .set-sort-button:hover,
@@ -3429,15 +3471,19 @@ ui <- fluidPage(
       }
 
       .set-sort-indicator {
-        flex: 0 0 auto;
+        display: inline-block;
+        width: 14px;
         color: var(--muted);
         font-size: 12px;
         line-height: 1.2;
+        text-align: right;
       }
 
       .set-report-table th.sorted-asc,
       .set-report-table th.sorted-desc {
         background: rgba(224, 24, 36, 0.12);
+      }
+
       .epss-header-cell {
         display: inline-flex;
         align-items: center;
@@ -3910,27 +3956,32 @@ ui <- fluidPage(
         color: #8ba6b4;
       }
 
+      .btn.run-button,
+      .btn.menu-button,
       .run-button,
       .menu-button {
         width: 100%;
         min-height: 50px;
-        border: 1px solid #090a0f;
-        border-radius: 8px;
-        color: var(--button-ink);
+        border: 1px solid #090a0f !important;
+        border-radius: 8px !important;
+        color: var(--button-ink) !important;
         font-size: 16px;
         font-weight: 700;
+        text-shadow: none !important;
         transition: border-color var(--theme-duration) var(--theme-ease),
           background var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
           color var(--theme-duration) var(--theme-ease),
           box-shadow var(--theme-duration) var(--theme-ease);
       }
 
+      .home .mini-thoth,
       .mini-thoth {
-        position: fixed;
+        position: fixed !important;
         right: 18px;
         bottom: 18px;
-        z-index: 4;
-        display: grid;
+        z-index: 24;
+        display: grid !important;
         grid-template-columns: 48px minmax(0, 260px);
         gap: 10px;
         align-items: end;
@@ -3940,8 +3991,12 @@ ui <- fluidPage(
       }
 
       .mini-thoth-avatar {
-        width: 48px;
-        height: auto;
+        display: block;
+        width: 48px !important;
+        max-width: 48px !important;
+        height: auto !important;
+        max-height: 88px !important;
+        object-fit: contain;
         align-self: end;
         filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.4));
         transition: filter var(--theme-duration) var(--theme-ease),
@@ -3951,19 +4006,19 @@ ui <- fluidPage(
       .mini-thoth-avatar-norse,
       .mini-thoth-title-norse,
       .mini-thoth-text-norse {
-        display: none;
+        display: none !important;
       }
 
       body.myth-norse .mini-thoth-avatar-egypt,
       body.myth-norse .mini-thoth-title-egypt,
       body.myth-norse .mini-thoth-text-egypt {
-        display: none;
+        display: none !important;
       }
 
       body.myth-norse .mini-thoth-avatar-norse,
       body.myth-norse .mini-thoth-title-norse,
       body.myth-norse .mini-thoth-text-norse {
-        display: block;
+        display: block !important;
       }
 
       body.myth-norse .mini-thoth {
@@ -3971,7 +4026,9 @@ ui <- fluidPage(
       }
 
       body.myth-norse .mini-thoth-avatar {
-        width: 58px;
+        width: 58px !important;
+        max-width: 58px !important;
+        max-height: 92px !important;
       }
 
       body.myth-norse .mini-thoth-avatar-norse,
@@ -3988,8 +4045,12 @@ ui <- fluidPage(
           drop-shadow(0 0 14px rgba(155, 220, 255, 0.58));
       }
 
+      .home .mini-thoth-scroll,
       .mini-thoth-scroll {
         position: relative;
+        display: block !important;
+        min-width: 0;
+        max-width: 260px;
         padding: 12px 14px;
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -4121,43 +4182,56 @@ ui <- fluidPage(
         margin: 0;
       }
 
+      .btn.run-button,
+      .btn.primary-button,
       .run-button,
       .primary-button {
-        background: var(--accent);
+        background: var(--accent) !important;
+        background-color: var(--accent) !important;
+        background-image: none !important;
         box-shadow: 5px 5px 0 var(--button-shadow), -5px -5px 0 rgba(255, 59, 31, 0.55),
-          0 0 28px rgba(224, 24, 36, 0.22);
+          0 0 28px rgba(224, 24, 36, 0.22) !important;
       }
 
+      .btn.secondary-button,
       .secondary-button {
-        background: var(--secondary-bg);
-        border-color: var(--secondary-line);
-        color: var(--secondary-ink);
-        box-shadow: 5px 5px 0 var(--button-shadow), -5px -5px 0 rgba(143, 0, 8, 0.64);
+        background: var(--secondary-bg) !important;
+        background-color: var(--secondary-bg) !important;
+        background-image: none !important;
+        border-color: var(--secondary-line) !important;
+        color: var(--secondary-ink) !important;
+        box-shadow: 5px 5px 0 var(--button-shadow), -5px -5px 0 rgba(143, 0, 8, 0.64) !important;
       }
 
       body.heaven-theme .run-button,
       body.heaven-theme .primary-button {
-        background: linear-gradient(135deg, #fff1a8 0%, #e1ad31 45%, #8fd7ee 100%);
-        border-color: #d1a036;
+        background: linear-gradient(135deg, #fff1a8 0%, #e1ad31 45%, #8fd7ee 100%) !important;
+        background-color: #e1ad31 !important;
+        background-image: linear-gradient(135deg, #fff1a8 0%, #e1ad31 45%, #8fd7ee 100%) !important;
+        border-color: #d1a036 !important;
         box-shadow: 5px 5px 0 rgba(120, 154, 174, 0.52),
           -5px -5px 0 rgba(255, 255, 255, 0.92),
-          0 0 28px rgba(217, 165, 46, 0.22);
+          0 0 28px rgba(217, 165, 46, 0.22) !important;
       }
 
       body.heaven-theme .secondary-button {
-        background: linear-gradient(135deg, #ffffff 0%, #e9f8ff 100%);
-        border-color: #8ecce3;
-        color: #1f5d78;
+        background: linear-gradient(135deg, #ffffff 0%, #e9f8ff 100%) !important;
+        background-color: #e9f8ff !important;
+        background-image: linear-gradient(135deg, #ffffff 0%, #e9f8ff 100%) !important;
+        border-color: #8ecce3 !important;
+        color: #1f5d78 !important;
         box-shadow: 5px 5px 0 rgba(120, 154, 174, 0.42),
-          -5px -5px 0 rgba(255, 255, 255, 0.95);
+          -5px -5px 0 rgba(255, 255, 255, 0.95) !important;
       }
 
       .run-button:hover,
       .run-button:focus,
       .menu-button:hover,
       .menu-button:focus {
-        background: var(--accent-hover);
-        color: var(--button-ink);
+        background: var(--accent-hover) !important;
+        background-color: var(--accent-hover) !important;
+        background-image: none !important;
+        color: var(--button-ink) !important;
       }
 
       body.heaven-theme .run-button:hover,
@@ -4165,13 +4239,16 @@ ui <- fluidPage(
       body.heaven-theme .primary-button:hover,
       body.heaven-theme .primary-button:focus {
         background: linear-gradient(135deg, #fff6c8 0%, #f0bd45 48%, #a8e6f8 100%);
+        background-image: linear-gradient(135deg, #fff6c8 0%, #f0bd45 48%, #a8e6f8 100%) !important;
         color: #1d2024;
       }
 
       body.heaven-theme .secondary-button:hover,
       body.heaven-theme .secondary-button:focus {
-        background: #ffffff;
-        color: #174e65;
+        background: #ffffff !important;
+        background-color: #ffffff !important;
+        background-image: none !important;
+        color: #174e65 !important;
       }
 
       body.myth-norse.heaven-theme .run-button,
@@ -4304,7 +4381,9 @@ ui <- fluidPage(
         }
 
         .mini-thoth-avatar {
-          width: 42px;
+          width: 42px !important;
+          max-width: 42px !important;
+          max-height: 76px !important;
           font-size: 21px;
         }
 
@@ -5768,7 +5847,15 @@ server <- function(input, output, session) {
   })
 
   output$profile_photo <- renderUI({
-    div(class = "profile-photo", style = avatar_css(account$avatar_id %||% "egypt_1"))
+    div(
+      class = "profile-photo",
+      style = paste0(
+        avatar_css(account$avatar_id %||% "egypt_1"),
+        "width:min(260px,72vw);aspect-ratio:1;",
+        "border:2px solid var(--line);border-radius:8px;",
+        "box-shadow:0 12px 28px rgba(0,0,0,0.28);"
+      )
+    )
   })
 
   output$mythology_style_picker <- renderUI({
