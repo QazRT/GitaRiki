@@ -4,6 +4,6 @@ services:
     env_file:
       - .Renviron
     ports:
-      - 3839:3838
-    container_name: gitariki_tmp
-    image: gitariki_tmp
+      - 3838:3838
+    container_name: gitariki
+    image: gitariki

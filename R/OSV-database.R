@@ -67,6 +67,10 @@ extract_osv_database <- function(zip_path, output_dir = file.path("osv_db", "raw
 #'
 #' Local index backend is removed. Use MongoDB backend instead.
 #'
+#' @param ... Deprecated local-backend arguments; ignored.
+#'
+#' @return This function always errors because the local CSV backend has been
+#'   removed.
 #' @export
 build_osv_index <- function(...) {
   stop(
@@ -80,6 +84,10 @@ build_osv_index <- function(...) {
 #'
 #' Local backend is removed. Use MongoDB backend instead.
 #'
+#' @param ... Deprecated local-backend arguments; ignored.
+#'
+#' @return This function always errors because the local OSV backend has been
+#'   removed.
 #' @export
 load_osv_database <- function(...) {
   stop(

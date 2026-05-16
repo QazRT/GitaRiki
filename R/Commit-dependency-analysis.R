@@ -29,6 +29,16 @@
   NA_character_
 }
 
+#' Default dependency manifest file patterns.
+#'
+#' Returns the regular expressions used by [commit_has_dependency_changes()] and
+#' [analyze_user_commits_with_syft_osv()] to decide whether a commit may have
+#' changed dependency metadata. The patterns cover common lock files, package
+#' manifests, build definitions, container files, and infrastructure manifests.
+#'
+#' @return A character vector of regular expressions matched against normalized
+#'   repository-relative paths.
+#' @export
 default_dependency_manifest_patterns <- function() {
   c(
     "(^|/)\\.bundle/config$",
@@ -133,6 +143,19 @@ default_dependency_manifest_patterns <- function() {
   )
 }
 
+#' Detect dependency-related file changes.
+#'
+#' Checks whether file paths changed by a commit match dependency manifest
+#' patterns. Path separators are normalized to `/` before matching.
+#'
+#' @param changed_files Character vector of changed file paths.
+#' @param patterns Character vector of regular expressions. Defaults to
+#'   [default_dependency_manifest_patterns()].
+#'
+#' @return A logical vector with one value per element of `changed_files`.
+#' @examples
+#' commit_has_dependency_changes(c("R/app.R", "renv.lock", "src/main.go"))
+#' @export
 commit_has_dependency_changes <- function(changed_files, patterns = default_dependency_manifest_patterns()) {
   if (length(changed_files) == 0L) return(logical(0))
 
@@ -2025,6 +2048,9 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 #' @param auto_min_commits_for_commit_parallel Minimum expected commits to enable commit-details parallel prefetch in auto mode.
 #' @param syft_timeout_sec Timeout for each syft run in seconds (`0` means no timeout).
 #' @param syft_excludes Character vector of syft `--exclude` patterns.
+#' @param syft_scan_parallel If `TRUE`, run Syft scans in parallel within a
+#' repository scan.
+#' @param syft_scan_workers Number of worker processes for parallel Syft scans.
 #' @param syft_target_mode Syft scan target mode: `snapshot` scans the full repository archive,
 #' `manifest` scans only changed dependency files plus companion manifests, and
 #' `manifest_first` tries manifest scanning first and falls back to full snapshots.
@@ -2032,6 +2058,7 @@ commit_has_dependency_changes <- function(changed_files, patterns = default_depe
 #' @param commit_info_workers Number of workers for commit-details prefetch.
 #' @param debug If `TRUE`, print stage-by-stage debug messages.
 #' @param debug_repo_every Progress print step (in commits) per repository when `debug = TRUE`.
+#' @param ... Reserved for compatibility with earlier wrappers; currently ignored.
 #'
 #' @return List with `summary`, `vulnerabilities`, `vulnerability_lifecycle`, `errors`.
 #' @export

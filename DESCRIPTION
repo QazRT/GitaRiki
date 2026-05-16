@@ -1,50 +1,63 @@
-Package: GitaRiki-OSAryans
+Package: GitaRikiOSAryans
 Type: Package
-Title: Tools for Downloading and Querying OSV Vulnerability Databases
+Title: GitHub Profile Analytics and OSV Vulnerability Scanning Tools
 Version: 0.1.0
 Authors@R: c(
     person(
-      given = "Заргаров",
-      family = "Александр",
+      given = "Aleksandr",
+      family = "Zargarov",
       email = "zargarovsasha@yandex.ru",
       role = c("aut", "cre")
     ),
     person(
-      given = "Соколова",
-      family = "Мария",
+      given = "Maria",
+      family = "Sokolova",
       email = "kyashinura@yandex.ru",
       role = c("aut")
     ),
     person(
-      given = "Миронов",
-      family = "Павел",
+      given = "Pavel",
+      family = "Mironov",
       email = "mironovpavel@yandex.ru",
       role = c("aut")
     )
     )
 Author: Zargarov Aleksandr, Sokolova Maria, Mironov Pavel
-Description: 
-    Provides utilities for analysing GitHub profiles
-License: MIT
+Maintainer: Sokolova Maria <kyashinura@yandex.ru>
+Description:
+    Provides utilities for analysing GitHub profiles, collecting commit and
+    repository metadata, loading analytical tables into ClickHouse, scanning
+    dependency snapshots with Syft and the OSV database, and asking
+    OpenAI-compatible models questions over ClickHouse data through local
+    tool-calling helpers.
+License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
-Depends: R (>= 4.0.0)
+Depends:
+    R (>= 4.0.0)
 Imports:
-    jsonlite,
-    curl,
-    mongolite,
-    gh,
-    shiny,
-    httr,
-    dplyr,
-    purrr,
-    utils,
-    zip,
     archive,
-    DBI
-RoxygenNote: 7.2.3
+    base64enc,
+    commonmark,
+    curl,
+    DBI,
+    digest,
+    dplyr,
+    gh,
+    httr,
+    jsonlite,
+    later,
+    openssl,
+    purrr,
+    shiny,
+    stringr,
+    utils,
+    zip
+RoxygenNote: 7.3.3
 Suggests:
     knitr,
+    markdown,
+    mongolite,
+    png,
     rmarkdown,
     testthat (>= 3.0.0)
 Config/testthat/edition: 3

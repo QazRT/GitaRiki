@@ -6,6 +6,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV R_LIBS_SITE=/opt/R/site-library:/usr/local/lib/R/site-library:/usr/lib/R/site-library
 ENV R_LIBS=/opt/R/site-library
 ENV RENV_CONFIG_SANDBOX_ENABLED=false
+# Harmless ClickHouse defaults keep code that reads env vars from failing while
+# the image is built without a local .Renviron.
+ENV CLICKHOUSE_HOST=localhost
+ENV CLICKHOUSE_PORT=8123
+ENV CLICKHOUSE_DB=default
+ENV CLICKHOUSE_USER=default
+ENV CLICKHOUSE_PASSWORD=default
+ENV CLICKHOUSE_HTTPS=false
+ENV CH_HOST=localhost
+ENV CH_PORT=8123
+ENV CH_DB=default
+ENV CH_USER=default
+ENV CH_PASSWORD=default
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -73,8 +86,7 @@ RUN set -eux; \
       --output /tmp/syft.tar.gz; \
     tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft; \
     chmod 0755 /usr/local/bin/syft; \
-    rm -f /tmp/syft.tar.gz; \
-    syft version
+    rm -f /tmp/syft.tar.gz
 
 WORKDIR /app
 
@@ -84,10 +96,11 @@ RUN mkdir -p /app/tmp /app/R/analysis_output
 
 RUN sed -i 's/^Package: .*/Package: GitaRiki.OSAryans/' DESCRIPTION && \
     sed -i '/^[[:space:]]*archive,/d' DESCRIPTION && \
-    Rscript -e "desc <- read.dcf('DESCRIPTION'); ar <- desc[1, 'Authors@R']; people <- eval(parse(text = ar)); cre_seen <- FALSE; people <- lapply(people, function(p) { r <- p$role; if ('cre' %in% r) { if (cre_seen) p$role <- setdiff(r, 'cre') else cre_seen <<- TRUE }; p }); lines <- readLines('DESCRIPTION', warn = FALSE); start <- grep('^Authors@R:', lines)[1]; end <- start; while (end < length(lines) && grepl('^[[:space:]]', lines[end + 1])) end <- end + 1; replacement <- c('Authors@R: c(', vapply(seq_along(people), function(i) paste0('    ', paste(deparse(people[[i]]), collapse = '\\n    '), if (i < length(people)) ',' else ''), character(1)), '    )'); prefix <- if (start > 1) lines[seq_len(start - 1)] else character(); suffix <- if (end < length(lines)) lines[(end + 1):length(lines)] else character(); writeLines(c(prefix, replacement, suffix), 'DESCRIPTION')" && \
-    Rscript -e ".libPaths(unique(c(Sys.getenv('R_LIBS'), .libPaths()))); pkgs <- c('jsonlite','curl','mongolite','gh','shiny','httr','dplyr','purrr','zip','DBI'); missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]; if (length(missing)) stop('Missing R packages: ', paste(missing, collapse = ', ')); cat('R library paths:', paste(.libPaths(), collapse = ' | '), '\n')"
+    Rscript -e "desc <- read.dcf('DESCRIPTION'); ar <- desc[1, 'Authors@R']; people <- eval(parse(text = ar)); cre_seen <- FALSE; people <- lapply(people, function(p) { r <- p$role; if ('cre' %in% r) { if (cre_seen) p$role <- setdiff(r, 'cre') else cre_seen <<- TRUE }; p }); lines <- readLines('DESCRIPTION', warn = FALSE); start <- grep('^Authors@R:', lines)[1]; end <- start; while (end < length(lines) && grepl('^[[:space:]]', lines[end + 1])) end <- end + 1; replacement <- c('Authors@R: c(', vapply(seq_along(people), function(i) paste0('    ', paste(deparse(people[[i]]), collapse = '\\n    '), if (i < length(people)) ',' else ''), character(1)), '    )'); prefix <- if (start > 1) lines[seq_len(start - 1)] else character(); suffix <- if (end < length(lines)) lines[(end + 1):length(lines)] else character(); writeLines(c(prefix, replacement, suffix), 'DESCRIPTION')"
 
-RUN R CMD INSTALL --library="${R_LIBS}" --no-byte-compile .
+# The Shiny container runs the app sources directly from /app/shiny_app.
+# Installing the local package during image build triggers R lazy loading, which
+# can execute project code that expects live ClickHouse credentials/network.
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
@@ -101,6 +114,19 @@ ENV PATH=/usr/local/bin:/usr/bin:/bin
 ENV PORT=3838
 ENV HOME=/app
 ENV TMPDIR=/app/tmp
+# Runtime defaults keep the app bootable. Override these with real deployment
+# values via docker run/compose/Kubernetes environment.
+ENV CLICKHOUSE_HOST=localhost
+ENV CLICKHOUSE_PORT=8123
+ENV CLICKHOUSE_DB=default
+ENV CLICKHOUSE_USER=default
+ENV CLICKHOUSE_PASSWORD=default
+ENV CLICKHOUSE_HTTPS=false
+ENV CH_HOST=localhost
+ENV CH_PORT=8123
+ENV CH_DB=default
+ENV CH_USER=default
+ENV CH_PASSWORD=default
 
 WORKDIR /app
 
@@ -139,8 +165,6 @@ COPY --from=builder /usr/lib/R/site-library /usr/lib/R/site-library
 
 # Application sources are writable because the app creates reports under R/analysis_output.
 COPY --chown=65532:65532 --from=builder /app /app
-
-RUN ["/usr/local/lib/R/bin/exec/R", "--slave", "--no-restore", "-e", ".libPaths(unique(c('/opt/R/site-library', '/usr/lib/R/site-library', '/usr/local/lib/R/site-library', .libPaths()))); library(utils); library(stats); stopifnot(requireNamespace('shiny', quietly = TRUE)); stopifnot(requireNamespace('mongolite', quietly = TRUE)); cat('Runtime lib paths:', paste(.libPaths(), collapse = ' | '), '\n'); cat('Runtime shiny path:', find.package('shiny'), '\n'); cat('Runtime mongolite path:', find.package('mongolite'), '\n')"]
 
 EXPOSE 3838
 
