@@ -7,3 +7,48 @@ services:
       - 3838:3838
     container_name: gitariki
     image: gitariki
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:head-distroless
+    container_name: clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+      - "9009:9009"
+    environment:
+      CLICKHOUSE_DB: app
+      CLICKHOUSE_USER: gitarik
+      CLICKHOUSE_PASSWORD: G1t@rikPassw0rdStrong
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - ./data:/var/lib/clickhouse
+      - ./logs:/var/log/clickhouse-server
+      - ./initdb:/docker-entrypoint-initdb.d
+      - ./config.d:/etc/clickhouse-server/config.d
+      - ./users.d:/etc/clickhouse-server/users.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mongo:
+    container_name: sca_mongo
+    image: mongo:8.2.6
+    ports:
+      - "27217:27017"
+    restart: unless-stopped
+    volumes:
+      - ./mdb:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=hwjSTX4No5BTGc13JQGjQggustbkXz-C1uqyC5opNBDgEz2sCpYbaXaUsrM3xyym
+      - MONGO_INITDB_DATABASE=admin
+    command: "/bin/bash -c 'echo \"db = db.getSiblingDB(\\\"osv_db\\\"); db.vulners.createIndex( { \\\"affected.package.purl\\\": 1 } ); db.vulners.createIndex( { \\\"affected.package.ecosystem\\\": 1 } ); db.vulners.createIndex(
+      { \\\"affected.package.name\\\": 1 } ); db.createUser({user: \\\"gitarik\\\", pwd: \\\"EuWNMkqzY-HHzs8e\\\", roles: [{role: \\\"dbOwner\\\", db: \\\"osv_db\\\"}]});\" > docker-entrypoint-initdb.d/create_indexes.js &&
+      /usr/local/bin/docker-entrypoint.sh mongod'"
