@@ -1,12 +1,12 @@
 services:
   gitariki:
-    build: .
+    # build: .
     env_file:
       - .Renviron
     ports:
       - 3838:3838
     container_name: gitariki
-    image: gitariki
+    image: ghrc.io/gitariki/githound
 
   clickhouse:
     image: clickhouse/clickhouse-server:head-distroless
