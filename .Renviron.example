@@ -23,6 +23,12 @@ OSV_MONGO_COLLECTION=vulns
 MONGODB_URI=mongodb://localhost:27017
 MONGO_URI=mongodb://localhost:27017
 
+# OpenAI-compatible AI settings used by Isida/Odin, Maat AI review,
+# and Mini-Tot/Mini-raven chat.
+OPENAI_BASE_URL=https://routerai.ru/api/v1
+OPENAI_MODEL=openai/gpt-oss-120b
+OPENAI_API_KEY=your-openai-compatible-api-key
+
 # Number of parallel workers used when collecting commits across repositories.
 # Keep at 1 for sequential collection; raise carefully to avoid GitHub rate limits.
 # Alias also supported: GITHOUND_COMMIT_COLLECTION_WORKERS.

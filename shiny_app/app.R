@@ -143,27 +143,137 @@ brand_block <- function() {
   )
 }
 
+mini_thoth_doc_paths <- function() {
+  unique(c(
+    file.path(project_root, "README.md"),
+    file.path(project_root, "DESCRIPTION"),
+    file.path(project_root, ".Renviron.example"),
+    file.path(project_root, "Step1.qmd"),
+    file.path(project_root, "Finish_step", "fStep.qmd"),
+    file.path(project_root, "inst", "ai", "README.md"),
+    file.path(project_root, "inst", "ai", "prompts", "system.md"),
+    file.path(project_root, "inst", "ai", "prompts", "role.md"),
+    file.path(project_root, "inst", "ai", "rag", "clickhouse_context.md"),
+    file.path(project_root, "inst", "ai", "rag", "security_rules.md"),
+    list.files(file.path(project_root, "man"), pattern = "\\.Rd$", full.names = TRUE)
+  ))
+}
+
+mini_thoth_read_docs <- local({
+  cache <- NULL
+  function(max_chars = 65000L) {
+    if (!is.null(cache)) {
+      return(cache)
+    }
+
+    docs <- lapply(mini_thoth_doc_paths(), function(path) {
+      if (!file.exists(path)) {
+        return(NULL)
+      }
+      text <- tryCatch(
+        paste(readLines(path, warn = FALSE, encoding = "UTF-8"), collapse = "\n"),
+        error = function(e) ""
+      )
+      text <- trimws(text)
+      if (!nzchar(text)) {
+        return(NULL)
+      }
+      paste0("## ", basename(path), "\n", text)
+    })
+    docs <- Filter(Negate(is.null), docs)
+    cache <<- if (length(docs) == 0L) {
+      "Документация проекта не найдена."
+    } else {
+      paste(docs, collapse = "\n\n---\n\n")
+    }
+    if (nchar(cache, type = "chars") > max_chars) {
+      cache <<- paste0(substr(cache, 1L, max_chars), "\n\n[Документация обрезана по лимиту контекста.]")
+    }
+    cache
+  }
+})
+
+mini_thoth_ensure_ai <- function() {
+  if (!exists("mcp_openai_chat", mode = "function")) {
+    mcp_path <- file.path(project_root, "R", "MCP-OpenAI.R")
+    if (!file.exists(mcp_path)) {
+      stop("Не найден MCP-OpenAI.R для подключения к ИИ.", call. = FALSE)
+    }
+    source(mcp_path, encoding = "UTF-8")
+  }
+  invisible(TRUE)
+}
+
+mini_thoth_ai_settings <- function() {
+  mini_thoth_ensure_ai()
+  settings <- tryCatch(
+    mcp_default_settings(),
+    error = function(e) {
+      settings_path <- file.path(project_root, "inst", "ai", "settings", "openai_mcp.json")
+      if (file.exists(settings_path) && requireNamespace("jsonlite", quietly = TRUE)) {
+        settings_text <- paste(readLines(settings_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+        return(jsonlite::fromJSON(settings_text, simplifyVector = FALSE))
+      }
+      list()
+    }
+  )
+  api <- settings$api %||% list()
+  model <- settings$model %||% list()
+
+  base_url_env <- api$base_url_env %||% "OPENAI_BASE_URL"
+  api_key_env <- api$api_key_env %||% "OPENAI_API_KEY"
+  model_env <- model$model_env %||% "OPENAI_MODEL"
+
+  list(
+    base_url = Sys.getenv(base_url_env, unset = api$default_base_url %||% "https://api.openai.com/v1"),
+    api_key = Sys.getenv(api_key_env, unset = ""),
+    model = Sys.getenv(model_env, unset = model$default_model %||% "gpt-4.1-mini"),
+    temperature = model$temperature %||% 0,
+    timeout = api$timeout_seconds %||% 120
+  )
+}
+
+mini_thoth_system_prompt <- function() {
+  paste(
+    "Ты Мини-Тот, а в скандинавском стиле Мини-ворон, встроенный помощник сайта GitHound.",
+    "Отвечай на русском языке коротко, дружелюбно и практично.",
+    "Используй RAG-контекст из документации проекта как основной источник правды.",
+    "Если в документации нет ответа, честно скажи об этом и предложи безопасный следующий шаг.",
+    "Не раскрывай секреты, токены, пароли, connection strings и приватные значения окружения.",
+    "Не придумывай факты о таблицах ClickHouse или результатах анализа, которых нет в вопросе или документации.",
+    "",
+    "RAG-контекст документации проекта:",
+    mini_thoth_read_docs(),
+    sep = "\n"
+  )
+}
+
 mini_thoth_tip <- function(text, norse_text = NULL) {
   norse_text <- norse_text %||% text
   div(
     class = "mini-thoth",
+    tabindex = "0",
+    `aria-expanded` = "true",
+    title = "Мини-Тот",
     tags$button(
       type = "button",
       class = "mini-thoth-close",
-      onclick = "$(this).closest('.mini-thoth').remove();",
-      `aria-label` = "Закрыть совет",
+      onclick = "event.preventDefault(); event.stopPropagation(); $(this).closest('.mini-thoth').addClass('mini-thoth-collapsed').attr('aria-expanded', 'false');",
+      `aria-label` = "Свернуть помощника",
       "x"
     ),
     img(
       src = "mini-thoth.svg",
       class = "mini-thoth-avatar mini-thoth-avatar-egypt",
       alt = "Мини-Тот",
+      onclick = "var widget = $(this).closest('.mini-thoth'); if (widget.hasClass('mini-thoth-collapsed')) { event.preventDefault(); event.stopPropagation(); widget.removeClass('mini-thoth-collapsed').attr('aria-expanded', 'true'); if (window.scrollMiniThothChatEnd) window.scrollMiniThothChatEnd(); }",
       style = "width:48px;max-width:48px;height:auto;max-height:88px;object-fit:contain;"
     ),
     img(
       src = "mini-raven.png",
       class = "mini-thoth-avatar mini-thoth-avatar-norse",
       alt = "Мини-ворон",
+      onclick = "var widget = $(this).closest('.mini-thoth'); if (widget.hasClass('mini-thoth-collapsed')) { event.preventDefault(); event.stopPropagation(); widget.removeClass('mini-thoth-collapsed').attr('aria-expanded', 'true'); if (window.scrollMiniThothChatEnd) window.scrollMiniThothChatEnd(); }",
       style = "width:58px;max-width:58px;height:auto;max-height:92px;object-fit:contain;"
     ),
     div(
@@ -171,7 +281,8 @@ mini_thoth_tip <- function(text, norse_text = NULL) {
       div(class = "mini-thoth-title mini-thoth-title-egypt", "Совет мини-Тота"),
       div(class = "mini-thoth-title mini-thoth-title-norse", "Совет мини-ворона"),
       div(class = "mini-thoth-text mini-thoth-text-egypt", text),
-      div(class = "mini-thoth-text mini-thoth-text-norse", norse_text)
+      div(class = "mini-thoth-text mini-thoth-text-norse", norse_text),
+      uiOutput("mini_thoth_chat")
     )
   )
 }
@@ -865,6 +976,43 @@ set_markdown_ui <- function(text) {
   }
 
   div(class = "set-markdown", HTML(rendered))
+}
+
+mini_thoth_markdown_ui <- function(text) {
+  text <- mini_thoth_trim_message(text)
+  if (!nzchar(text)) {
+    return("")
+  }
+
+  rendered <- NULL
+  if (requireNamespace("commonmark", quietly = TRUE)) {
+    rendered <- commonmark::markdown_html(
+      text,
+      hardbreaks = TRUE,
+      extensions = c("table", "strikethrough", "autolink")
+    )
+  } else if (requireNamespace("markdown", quietly = TRUE)) {
+    rendered <- markdown::markdownToHTML(
+      text = text,
+      fragment.only = TRUE,
+      options = c("tables", "fenced_code_blocks", "autolink")
+    )
+  }
+
+  if (is.null(rendered) || !nzchar(rendered)) {
+    return(text)
+  }
+
+  rendered <- trimws(rendered)
+  div(class = "mini-thoth-markdown", HTML(rendered))
+}
+
+mini_thoth_trim_message <- function(text) {
+  text <- paste(as.character(text %||% ""), collapse = "\n")
+  text <- gsub("\r\n?", "\n", text, perl = TRUE)
+  text <- gsub("^(?:[[:blank:]]*\n)+", "", text, perl = TRUE)
+  text <- gsub("(?:\n[[:blank:]]*)+$", "", text, perl = TRUE)
+  trimws(text)
 }
 
 set_plot_src <- function(path) {
@@ -1728,6 +1876,93 @@ ui <- fluidPage(
         $('#set_progress_percent').text(value + '%');
         if (data.label) {
           renderSetProgressLabel(data.label);
+        }
+      });
+
+      function submitMiniThothQuestion(form) {
+        if (!window.Shiny || !form || !form.length) return;
+        var input = form.find('.mini-thoth-input');
+        var button = form.find('.mini-thoth-send');
+        var question = String(input.val() || '').trim();
+        if (!question || button.prop('disabled')) return;
+        input.prop('disabled', true);
+        button.prop('disabled', true);
+        Shiny.setInputValue('mini_thoth_submit', {
+          question: question,
+          nonce: Date.now()
+        }, {priority: 'event'});
+      }
+
+      $(document).on('click', '.mini-thoth-send', function() {
+        submitMiniThothQuestion($(this).closest('.mini-thoth-chat-form'));
+      });
+
+      $(document).on('keydown', '.mini-thoth-input', function(event) {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          submitMiniThothQuestion($(this).closest('.mini-thoth-chat-form'));
+        }
+      });
+
+      function scrollMiniThothChatEnd() {
+        window.setTimeout(function() {
+          $('.mini-thoth-chat-log').each(function() {
+            this.scrollTop = this.scrollHeight;
+          });
+        }, 0);
+        window.setTimeout(function() {
+          $('.mini-thoth-chat-log').each(function() {
+            this.scrollTop = this.scrollHeight;
+          });
+        }, 80);
+        window.setTimeout(function() {
+          $('.mini-thoth-chat-log').each(function() {
+            this.scrollTop = this.scrollHeight;
+          });
+        }, 220);
+      }
+      window.scrollMiniThothChatEnd = scrollMiniThothChatEnd;
+
+      Shiny.addCustomMessageHandler('scrollMiniThothChatEnd', scrollMiniThothChatEnd);
+
+      function watchMiniThothChat() {
+        if (window.githoundMiniThothObserver) return;
+        if (!document.body) {
+          window.setTimeout(watchMiniThothChat, 50);
+          return;
+        }
+        window.githoundMiniThothObserver = new MutationObserver(function(mutations) {
+          var shouldScroll = mutations.some(function(mutation) {
+            var target = $(mutation.target);
+            return target.closest('.mini-thoth-chat').length || target.find('.mini-thoth-chat').length;
+          });
+          if (shouldScroll) {
+            scrollMiniThothChatEnd();
+          }
+        });
+        window.githoundMiniThothObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true
+        });
+      }
+      watchMiniThothChat();
+
+      function expandMiniThoth(widget) {
+        widget.removeClass('mini-thoth-collapsed').attr('aria-expanded', 'true');
+        scrollMiniThothChatEnd();
+      }
+
+      $(document).on('click', '.mini-thoth.mini-thoth-collapsed', function(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        expandMiniThoth($(this));
+      });
+
+      $(document).on('keydown', '.mini-thoth.mini-thoth-collapsed', function(event) {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          expandMiniThoth($(this));
         }
       });
 
@@ -4031,6 +4266,43 @@ ui <- fluidPage(
         max-height: 92px !important;
       }
 
+      .mini-thoth.mini-thoth-collapsed {
+        grid-template-columns: auto;
+        gap: 0;
+        width: auto;
+        cursor: pointer;
+      }
+
+      .mini-thoth.mini-thoth-collapsed .mini-thoth-scroll,
+      .mini-thoth.mini-thoth-collapsed .mini-thoth-close {
+        display: none !important;
+      }
+
+      .mini-thoth.mini-thoth-collapsed .mini-thoth-avatar {
+        padding: 6px;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        background: var(--panel);
+        box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+      }
+
+      body.myth-norse .mini-thoth.mini-thoth-collapsed {
+        transform: translateX(8px);
+      }
+
+      body.myth-norse .mini-thoth.mini-thoth-collapsed .mini-thoth-avatar-norse {
+        padding: 4px;
+        border-radius: 42%;
+        clip-path: none;
+        object-fit: contain;
+      }
+
+      .mini-thoth.mini-thoth-collapsed:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+        border-radius: 42%;
+      }
+
       body.myth-norse .mini-thoth-avatar-norse,
       body.myth-norse .logout-modal-avatar-norse {
         border-radius: 42%;
@@ -4076,6 +4348,167 @@ ui <- fluidPage(
         font-size: 13px;
         line-height: 1.35;
         transition: color var(--theme-duration) var(--theme-ease);
+      }
+
+      .mini-thoth-chat {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      .mini-thoth-chat-log {
+        display: grid;
+        gap: 7px;
+        max-height: 34vh;
+        overflow-y: auto;
+        padding-right: 2px;
+      }
+
+      .mini-thoth-message {
+        max-width: 100%;
+        padding: 8px 9px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        font-size: 12px;
+        line-height: 1.35;
+        word-break: break-word;
+      }
+
+      .mini-thoth-message-user {
+        margin-left: 18px;
+        background: rgba(224, 24, 36, 0.12);
+        color: var(--ink);
+        white-space: pre-wrap;
+      }
+
+      .mini-thoth-message-assistant {
+        margin-right: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--muted);
+        white-space: normal;
+      }
+
+      .mini-thoth-message-loading {
+        font-style: italic;
+        color: var(--muted);
+        white-space: normal;
+      }
+
+      .mini-thoth-markdown p,
+      .mini-thoth-markdown ul,
+      .mini-thoth-markdown ol,
+      .mini-thoth-markdown pre,
+      .mini-thoth-markdown table {
+        margin: 0 0 7px;
+      }
+
+      .mini-thoth-markdown p:last-child,
+      .mini-thoth-markdown ul:last-child,
+      .mini-thoth-markdown ol:last-child,
+      .mini-thoth-markdown pre:last-child,
+      .mini-thoth-markdown table:last-child {
+        margin-bottom: 0;
+      }
+
+      .mini-thoth-markdown ul,
+      .mini-thoth-markdown ol {
+        padding-left: 17px;
+      }
+
+      .mini-thoth-markdown code {
+        padding: 1px 4px;
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ink);
+      }
+
+      .mini-thoth-markdown pre {
+        max-width: 100%;
+        overflow-x: auto;
+        padding: 7px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.22);
+      }
+
+      .mini-thoth-markdown pre code {
+        padding: 0;
+        background: transparent;
+      }
+
+      .mini-thoth-markdown a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      .mini-thoth-markdown table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+
+      .mini-thoth-markdown th,
+      .mini-thoth-markdown td {
+        padding: 4px 5px;
+        border: 1px solid var(--line);
+      }
+
+      .mini-thoth-chat-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .mini-thoth-input {
+        min-width: 0;
+        height: 34px;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--field-bg);
+        color: var(--ink);
+        font-size: 12px;
+        outline: none;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease);
+      }
+
+      .mini-thoth-input:focus {
+        border-color: var(--accent);
+      }
+
+      .mini-thoth-input::placeholder {
+        color: var(--muted);
+        opacity: 0.8;
+      }
+
+      .mini-thoth-send {
+        width: 34px;
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--button-ink);
+        font-size: 16px;
+        font-weight: 900;
+        line-height: 1;
+        transition: border-color var(--theme-duration) var(--theme-ease),
+          background-color var(--theme-duration) var(--theme-ease),
+          color var(--theme-duration) var(--theme-ease),
+          opacity var(--theme-duration) var(--theme-ease);
+      }
+
+      .mini-thoth-send:hover,
+      .mini-thoth-send:focus {
+        background: var(--accent-hover);
+      }
+
+      .mini-thoth-send:disabled,
+      .mini-thoth-input:disabled {
+        opacity: 0.62;
       }
 
       .mini-thoth-close {
@@ -4556,6 +4989,8 @@ server <- function(input, output, session) {
   remember_attempted <- reactiveVal(FALSE)
   remember_input_seen <- reactiveVal(FALSE)
   github_oauth_processed <- reactiveVal(FALSE)
+  mini_thoth_messages <- reactiveVal(list())
+  mini_thoth_busy <- reactiveVal(FALSE)
   set_progress <- reactiveValues(value = 0, label = "Ожидание запуска")
   account <- reactiveValues(
     email = NULL,
@@ -4566,6 +5001,14 @@ server <- function(input, output, session) {
     github_token_expires_at = NA_character_,
     mythology_style = "egypt"
   )
+
+  scroll_mini_thoth_chat_end <- function() {
+    session$onFlushed(function() {
+      session$sendCustomMessage("scrollMiniThothChatEnd", list())
+    }, once = TRUE)
+    invisible(TRUE)
+  }
+
   parse_github_token_expires_at <- function(value) {
     value <- value %||% NA_character_
     if (inherits(value, "POSIXt")) {
@@ -4591,6 +5034,116 @@ server <- function(input, output, session) {
     }
     trimws(account$github_token %||% "")
   }
+
+  output$mini_thoth_chat <- renderUI({
+    messages <- mini_thoth_messages()
+    busy <- isTRUE(mini_thoth_busy())
+
+    rendered_messages <- lapply(messages, function(item) {
+      role <- item$role %||% "assistant"
+      text <- mini_thoth_trim_message(item$content %||% "")
+      if (!nzchar(text)) {
+        return(NULL)
+      }
+      content <- if (identical(role, "assistant")) {
+        mini_thoth_markdown_ui(text)
+      } else {
+        text
+      }
+      div(class = paste("mini-thoth-message", paste0("mini-thoth-message-", role)), content)
+    })
+    rendered_messages <- Filter(Negate(is.null), rendered_messages)
+
+    if (busy) {
+      rendered_messages <- c(rendered_messages, list(
+        div(class = "mini-thoth-message mini-thoth-message-assistant mini-thoth-message-loading", "Мини-Тот думает...")
+      ))
+    }
+
+    div(
+      class = "mini-thoth-chat",
+      if (length(rendered_messages) > 0L) {
+        div(class = "mini-thoth-chat-log", rendered_messages)
+      },
+      if (!busy) {
+        div(
+          class = "mini-thoth-chat-form",
+          tags$input(
+            type = "text",
+            class = "mini-thoth-input",
+            placeholder = "Спросить о GitHound",
+            autocomplete = "off",
+            `aria-label` = "Вопрос Мини-Тоту"
+          ),
+          tags$button(
+            type = "button",
+            class = "mini-thoth-send",
+            title = "Отправить вопрос",
+            `aria-label` = "Отправить вопрос Мини-Тоту",
+            HTML("&#8594;")
+          )
+        )
+      }
+    )
+  })
+
+  observeEvent(input$mini_thoth_submit, {
+    payload <- input$mini_thoth_submit
+    question <- mini_thoth_trim_message(payload$question %||% "")
+    if (!nzchar(question) || isTRUE(mini_thoth_busy())) {
+      return(invisible(FALSE))
+    }
+
+    user_message <- list(role = "user", content = question)
+    messages_with_question <- c(mini_thoth_messages(), list(user_message))
+    mini_thoth_messages(messages_with_question)
+    mini_thoth_busy(TRUE)
+    scroll_mini_thoth_chat_end()
+    try(session$flushReact(), silent = TRUE)
+
+    assistant_text <- tryCatch({
+      mini_thoth_ensure_ai()
+      settings <- mini_thoth_ai_settings()
+      chat_history <- utils::tail(Filter(function(item) {
+        item$role %in% c("user", "assistant")
+      }, messages_with_question), 10L)
+      chat_messages <- lapply(chat_history, function(item) {
+        mcp_message(item$role, item$content)
+      })
+      result <- mcp_openai_chat(
+        messages = chat_messages,
+        tools = list(),
+        model = settings$model,
+        api_key = settings$api_key,
+        base_url = settings$base_url,
+        system_prompt = mini_thoth_system_prompt(),
+        temperature = settings$temperature,
+        max_tool_rounds = 0,
+        timeout = settings$timeout
+      )
+      content <- result$final_message$content %||% ""
+      if (is.list(content)) {
+        content <- paste(unlist(content, use.names = FALSE), collapse = "\n")
+      }
+      content <- trimws(as.character(content))
+      if (!nzchar(content)) {
+        content <- "Я получил пустой ответ от ИИ. Проверьте настройки OPENAI_MODEL, OPENAI_BASE_URL и OPENAI_API_KEY."
+      }
+      mini_thoth_trim_message(content)
+    }, error = function(e) {
+      paste("Не получилось получить ответ ИИ:", conditionMessage(e))
+    })
+    assistant_text <- mini_thoth_trim_message(assistant_text)
+
+    mini_thoth_messages(c(
+      messages_with_question,
+      list(list(role = "assistant", content = assistant_text))
+    ))
+    mini_thoth_busy(FALSE)
+    scroll_mini_thoth_chat_end()
+    invisible(TRUE)
+  })
+
   apply_account_row <- function(row) {
     account$email <- row$email[[1]]
     account$nickname <- row$nickname[[1]]
@@ -5297,6 +5850,8 @@ server <- function(input, output, session) {
     archive_page(1L)
     analysis_target(NULL)
     set_report(NULL)
+    mini_thoth_messages(list())
+    mini_thoth_busy(FALSE)
     avatars_open(FALSE)
     current_page("landing")
     notify_user("Вы вышли из аккаунта.", type = "message", duration = 5)
